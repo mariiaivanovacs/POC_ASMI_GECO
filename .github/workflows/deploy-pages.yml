@@ -1,0 +1,78 @@
+name: Deploy POCs to GitHub Pages
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'helmdocs/**'
+      - 'helmlearn/**'
+      - 'deploy/index.html'
+      - '.github/workflows/deploy-pages.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: |
+            helmdocs/package-lock.json
+            helmlearn/package-lock.json
+
+      - name: Derive the Pages base paths for this repo
+        id: base
+        run: |
+          REPO="${GITHUB_REPOSITORY#*/}"
+          echo "docs=/$REPO/document-assembly/" >> "$GITHUB_OUTPUT"
+          echo "learn=/$REPO/genai-learning/" >> "$GITHUB_OUTPUT"
+
+      - name: Build HelmDocs (Document Assembly)
+        working-directory: helmdocs
+        env:
+          BASE_PATH: ${{ steps.base.outputs.docs }}
+        run: |
+          npm ci
+          npm run build
+
+      - name: Build HelmLearn (Gen-AI Training) — offline engine only on this static host
+        working-directory: helmlearn
+        env:
+          BASE_PATH: ${{ steps.base.outputs.learn }}
+        run: |
+          npm ci
+          npm run build
+
+      - name: Assemble the site
+        run: |
+          mkdir -p _site/document-assembly _site/genai-learning
+          cp -r helmdocs/dist/. _site/document-assembly/
+          cp -r helmlearn/dist/. _site/genai-learning/
+          cp deploy/index.html _site/index.html
+
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: _site
+
+  deploy:
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4

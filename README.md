@@ -2,8 +2,10 @@
 
 | POC | What it is | IMDA category | Live demo | Code |
 |---|---|---|---|---|
-| **HelmDocs** | Document assembly for compliance paperwork — a form you fill by hand becomes a template that fills itself | *Document Assembly Software* (Legal) | `http://<vps>/document-assembly/` | [`helmdocs/`](helmdocs/) |
-| **HelmLearn** | Gen-AI digital training — a safety SOP or OEM manual becomes playable, tracked training | *Gen-AI Digital Training System* | `http://<vps>/genai-learning/` | [`helmlearn/`](helmlearn/) |
+| **HelmDocs** | Document assembly for compliance paperwork — a form you fill by hand becomes a template that fills itself | *Document Assembly Software* (Legal) | **[mariiaivanovacs.github.io/POC_ASMI_GECO/document-assembly/](https://mariiaivanovacs.github.io/POC_ASMI_GECO/document-assembly/)** | [`helmdocs/`](helmdocs/) |
+| **HelmLearn** | Gen-AI digital training — a safety SOP or OEM manual becomes playable, tracked training | *Gen-AI Digital Training System* | **[mariiaivanovacs.github.io/POC_ASMI_GECO/genai-learning/](https://mariiaivanovacs.github.io/POC_ASMI_GECO/genai-learning/)** | [`helmlearn/`](helmlearn/) |
+
+Landing page with both: **[mariiaivanovacs.github.io/POC_ASMI_GECO/](https://mariiaivanovacs.github.io/POC_ASMI_GECO/)** — auto-deployed on every push to `main` by [`.github/workflows/deploy-pages.yml`](.github/workflows/deploy-pages.yml). A second copy can also run on a VPS (below) for a custom domain or the DeepSeek-relay feature.
 
 Both run entirely in the browser (no server, no API key needed), with fictional demo data: **Harbourline Marine Services Pte Ltd**,
 vessels **MV Ocean Pioneer** and **Sea Falcon 7**, the **Tuas yard**. Every number on screen is computed from live data.
@@ -135,14 +137,24 @@ npm run e2e     # Playwright drives the real UI (npm run e2e:install once for Ch
 npm run build   # type-check + production build
 ```
 
-## 7. Deploy to the VPS
+## 7. Deploy
+
+### GitHub Pages (live now, automatic)
+
+Every push to `main` that touches `helmdocs/`, `helmlearn/` or `deploy/index.html` rebuilds both apps for the repo's Pages sub-path
+(`/POC_ASMI_GECO/document-assembly/`, `/POC_ASMI_GECO/genai-learning/`) and redeploys — see `.github/workflows/deploy-pages.yml`. Both
+apps use `HashRouter`, so no server-side rewrite is needed; HelmLearn's DeepSeek relay (`/api/deepseek`) has no server to proxy
+through on Pages, so that mode falls back to the offline engine there (same graceful fallback as any DeepSeek failure) — full DeepSeek
+mode needs the VPS deploy below. Trigger a rebuild manually with `gh workflow run deploy-pages.yml`.
+
+### VPS (optional — for a custom domain or the DeepSeek relay)
 
 `deploy/deploy.sh` builds HelmDocs for `/document-assembly/`, uploads it as static files, uploads HelmLearn's source and builds it on
 the server (it needs its small server-side URL-import helper, so it runs as a `vite preview` systemd service), installs the nginx site
 and the landing page, and checks both URLs:
 
 ```bash
-HOST=173.208.162.243 USER=administrator ./deploy/deploy.sh      # password prompts, or SSHPASS=… with sshpass
+HOST=<vps-ip> USER=administrator ./deploy/deploy.sh      # password prompts, or SSHPASS=… with sshpass
 ```
 
 Files: `deploy/nginx-asmi-poc.conf` (both sub-paths on port 80), `deploy/helmlearn-preview.service`, `deploy/index.html` (landing page).
