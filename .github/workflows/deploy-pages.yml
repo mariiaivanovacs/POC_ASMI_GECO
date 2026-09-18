@@ -45,7 +45,7 @@ jobs:
         env:
           BASE_PATH: ${{ steps.base.outputs.docs }}
         run: |
-          npm ci
+          npm install
           npm run build
 
       - name: Build HelmLearn (Gen-AI Training) — offline engine only on this static host
@@ -53,7 +53,7 @@ jobs:
         env:
           BASE_PATH: ${{ steps.base.outputs.learn }}
         run: |
-          npm ci
+          npm install
           npm run build
 
       - name: Assemble the site
