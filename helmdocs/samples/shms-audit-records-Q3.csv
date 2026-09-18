@@ -1,0 +1,15 @@
+record,element,score_pct,finding
+RA-2026-031,Risk management,100 %,Conforms
+RA-2026-032,Risk management,100 %,Conforms
+RA-2026-033,Risk management,80 %,Minor gap
+PTW-HW-0301,Risk management,100 %,Conforms
+PTW-HW-0303,Risk management,60 %,Fire watch not recorded
+PTW-HW-0306,Risk management,60 %,Fire watch not recorded
+PTW-HW-0308,Risk management,100 %,Conforms
+TBT-0912,Risk management,100 %,Conforms
+TBT-0919,Risk management,100 %,Conforms
+INSP-0904,Risk management,100 %,Conforms
+INSP-0911,Risk management,90 %,Observation
+INSP-0918,Risk management,100 %,Conforms
+TRN-0902,Risk management,100 %,Conforms
+TRN-0916,Risk management,100 %,Conforms

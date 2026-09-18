@@ -1,0 +1,22 @@
+SOP-HW-04 Hot Work Permit Procedure
+Revision 5. Effective 01 March 2026. Harbourline Marine Services yard procedures.
+
+1. Purpose. This procedure defines the controls required before, during and after hot work (welding, cutting, grinding, open flame) at Harbourline yards and on vessels under repair.
+
+2. Obtain a Hot Work Permit signed by the Permit Issuer and the Area Authority before any hot work starts. A permit is valid for one shift only and must be displayed at the work location.
+
+3. Remove all flammable and combustible materials within 11 m (35 ft) of the hot work. Where removal is not practicable they shall be protected with fire-resistant blankets. Cover openings, drains and gratings so that sparks cannot fall through.
+
+4. Post a trained fire watch with a charged extinguisher for the full duration of hot work. The fire watch shall remain at the location for at least 30 minutes after hot work has ended and shall not perform other duties.
+
+5. Test the atmosphere for flammable gas before work starts in enclosed or confined spaces and at intervals not exceeding 2 hours. Work stops if the reading exceeds 1 % LEL.
+
+6. Close the permit. On completion the Area Authority inspects the location and closes the permit. Hot surfaces are marked until they have cooled for 60 minutes.
+
+Definitions
+Fire watch: Trained person who watches for fire during and after hot work.
+Flash point: Lowest temperature at which a liquid gives off enough vapour to ignite.
+Area Authority: Person responsible for the work area who inspects and closes the permit.
+Permit Issuer: Supervisor authorised to issue a hot work permit.
+
+Personal protective equipment: welding helmet or face shield, fire-resistant coveralls, gloves, safety boots. A gas detector is required in enclosed spaces. Keep a fire blanket at the work location.

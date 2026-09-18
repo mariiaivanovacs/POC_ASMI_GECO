@@ -1,0 +1,16 @@
+[Unit]
+Description=HelmLearn POC (vite preview, base /genai-learning/)
+After=network.target
+
+[Service]
+Type=simple
+WorkingDirectory=/opt/asmi-poc/helmlearn
+Environment=BASE_PATH=/genai-learning/
+Environment=NODE_ENV=production
+ExecStart=/usr/bin/npx vite preview --host 127.0.0.1 --port 4173 --strictPort
+Restart=always
+RestartSec=3
+User=www-data
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,28 @@
+SUPPLIER'S DECLARATION OF CONFORMITY
+Inventory of Hazardous Materials (IHM) - IMO Res. MEPC.269(68) - Hong Kong Convention
+Form SDoC-01 Rev. 3
+
+1. SUPPLIER
+Company: Harbourline Marine Services Pte Ltd
+Contact person: Rachel Tan, QA Manager
+
+2. VESSEL AND WORK ORDER
+Vessel name: Sea Falcon 7
+IMO number: 9074729
+Work order no.: WO-2433
+Date of work: 18 Sep 2026
+
+3. PRODUCT / MATERIAL SUPPLIED OR INSTALLED
+Description: Replacement of gasket set, main engine unit 3
+Hazardous material present (HKC Appendix 1 / 2): Yes
+
+4. HAZARDOUS MATERIALS DECLARED (if applicable)
+Material (HKC list): Asbestos
+Quantity: 1.2 kg
+Location on board: Engine room, main engine unit 3
+
+5. DECLARATION
+The supplier declares that the information above is complete and accurate to the best of its knowledge.
+Authorised person: Rachel Tan, QA Manager
+Signature: ______________________
+Date: 18 Sep 2026
