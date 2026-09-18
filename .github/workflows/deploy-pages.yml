@@ -44,7 +44,11 @@ jobs:
         working-directory: helmdocs
         env:
           BASE_PATH: ${{ steps.base.outputs.docs }}
+        # the committed lockfile was generated on macOS and pins only its own platform's optional
+        # rollup/esbuild binaries (npm/cli#4828) — drop it here so npm resolves fresh for this Linux
+        # runner; the committed lockfile itself is untouched (this checkout is discarded after the job)
         run: |
+          rm -f package-lock.json
           npm install
           npm run build
 
@@ -53,6 +57,7 @@ jobs:
         env:
           BASE_PATH: ${{ steps.base.outputs.learn }}
         run: |
+          rm -f package-lock.json
           npm install
           npm run build
 
