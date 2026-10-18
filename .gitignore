@@ -4,3 +4,6 @@ test-results/
 playwright-report/
 .DS_Store
 *.log
+.env.local
+.demo_login
+deploy/docker/Caddyfile.asmi.snippet

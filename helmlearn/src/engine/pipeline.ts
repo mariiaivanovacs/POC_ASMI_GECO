@@ -3,7 +3,7 @@ import { analyze } from './analyze';
 import { extractText, extractUrl, ExtractError } from './extract';
 import { ALL_TYPES, generate } from './generate';
 import { ttsAvailable } from './tts';
-import { generateWithDeepSeek, LLMError } from './llm';
+import { generateWithQwen, LLMError } from './llm';
 
 export interface PipelineUpdate { stage: Stage; pct: number; note?: string }
 export interface PipelineResult {
@@ -57,14 +57,14 @@ export async function runPipeline(material: Material, file: File | null, report:
   let langs: Lang[] = ['en'];
   let note: string | null = null;
   const local = generate(material.id, structure, material.seed);
-  if (opts.provider === 'deepseek' && opts.apiKey) {
-    report({ stage: 'drafting', pct: 62, note: 'Asking DeepSeek to draft exercises' + (opts.translate ? ' in EN, BM and 中文' : '') });
+  if (opts.provider === 'deepseek') {
+    report({ stage: 'drafting', pct: 62, note: 'Asking Qwen to draft exercises' + (opts.translate ? ' in EN, BM and 中文' : '') });
     try {
-      const r = await generateWithDeepSeek(opts.apiKey, text!, structure, material.id, opts.translate, local.widgets);
+      const r = await generateWithQwen(opts.apiKey, text!, structure, material.id, opts.translate, local.widgets);
       exercises = r.exercises; widgets = r.widgets; missing = r.missing; langs = r.langs; source = 'deepseek';
-      report({ stage: 'drafting', pct: 88, note: exercises.length + ' drafted by DeepSeek' });
+      report({ stage: 'drafting', pct: 88, note: exercises.length + ' drafted by Qwen' });
     } catch (e) {
-      const msg = e instanceof LLMError ? e.message : 'DeepSeek failed.';
+      const msg = e instanceof LLMError ? e.message : 'Qwen failed.';
       note = msg + ' Used the offline engine instead.';
       report({ stage: 'drafting', pct: 70, note: note });
       exercises = local.exercises; widgets = local.widgets; missing = local.missing;
@@ -79,7 +79,6 @@ export async function runPipeline(material: Material, file: File | null, report:
       await tick();
     }
     widgets = local.widgets;
-    if (opts.provider === 'deepseek' && !opts.apiKey) note = 'DeepSeek selected but no API key set — used the offline engine.';
   }
   await tick();
 

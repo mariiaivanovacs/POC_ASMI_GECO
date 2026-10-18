@@ -31,7 +31,7 @@ export function parseDate(v: string): number | null {
   if (iso) return new Date(parseInt(iso[1]), parseInt(iso[2]) - 1, parseInt(iso[3])).getTime();
   return null;
 }
-const startOfDay = (t: number) => { const d = new Date(t); d.setHours(0, 0, 0, 0); return d.getTime(); };
+export const startOfDay = (t: number) => { const d = new Date(t); d.setHours(0, 0, 0, 0); return d.getTime(); };
 const endOfMonth = (t: number) => { const d = new Date(t); return new Date(d.getFullYear(), d.getMonth() + 1, 0).getTime(); };
 const endOfQuarter = (t: number) => { const d = new Date(t); const q = Math.floor(d.getMonth() / 3); return new Date(d.getFullYear(), q * 3 + 3, 0).getTime(); };
 
@@ -105,4 +105,37 @@ export function statusWord(s: DocStatus): string { return s === 'draft' ? 'Draft
 export function diffValues(a: Record<string, string>, b: Record<string, string>): { key: string; from: string; to: string }[] {
   const keys = Array.from(new Set([...Object.keys(a), ...Object.keys(b)]));
   return keys.filter((k) => (a[k] || '') !== (b[k] || '')).map((k) => ({ key: k, from: a[k] || '', to: b[k] || '' }));
+}
+
+// ---------------------------------------------------------------------------------------------------------------------
+// Calendar: every document with its due date — outstanding ones by urgency, submitted ones as on time / late
+// ---------------------------------------------------------------------------------------------------------------------
+export type CalState = Urgency | 'ontime' | 'late';
+export interface CalEntry { doc: Doc; rule: DeadlineRule; due: number; submittedAt: number | null; state: CalState; daysLate: number }
+
+function ruleFor(doc: Doc, rules: DeadlineRule[]): DeadlineRule {
+  return rules.find((r) => r.regimeShort === doc.regimeShort) || { regimeShort: doc.regimeShort, basis: 'month-end', field: '', days: 0, text: 'Internal deadline — month end', estHours: 1 };
+}
+
+export function calendarEntries(docs: Doc[], rules: DeadlineRule[], now = Date.now()): CalEntry[] {
+  const today = startOfDay(now);
+  return docs.map((doc) => {
+    const rule = ruleFor(doc, rules);
+    const due = startOfDay(dueDate(doc, rule));
+    if (doc.status === 'sent') {
+      const at = doc.sentAt ?? doc.createdAt;
+      const daysLate = Math.round((startOfDay(at) - due) / DAY);
+      return { doc, rule, due, submittedAt: at, state: daysLate > 0 ? 'late' : 'ontime', daysLate: Math.max(0, daysLate) } as CalEntry;
+    }
+    const days = Math.round((due - today) / DAY);
+    return { doc, rule, due, submittedAt: null, state: urgencyOf(days), daysLate: Math.max(0, -days) } as CalEntry;
+  }).sort((a, b) => a.due - b.due);
+}
+
+/** 6×7 grid of day timestamps (Monday first) covering the month that contains `month`. */
+export function monthGrid(month: number): number[] {
+  const d = new Date(month);
+  const first = new Date(d.getFullYear(), d.getMonth(), 1);
+  const offset = (first.getDay() + 6) % 7;
+  return Array.from({ length: 42 }, (_, i) => new Date(first.getFullYear(), first.getMonth(), 1 - offset + i).getTime());
 }

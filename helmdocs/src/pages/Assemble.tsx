@@ -1,14 +1,20 @@
-import { useMemo, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { Link, useNavigate, useParams } from 'react-router-dom';
 import type { AggFn, Attachment, Binding, Doc, Field, Section, Template } from '../data/types';
 import { COMPANY } from '../data/seed';
 import { assemble, evaluateRule, missingMandatory, precheck, ruleText, signatoryOk } from '../engine/assemble';
 import { buildDocx, buildHtml, buildPdf, mailtoUrl, saveBlob } from '../engine/export';
 import { imoValid, lineKeys } from '../engine/fields';
+import { aiAvailable, draftField, reviewDocument, type Finding } from '../engine/llm';
 import { AGG_FNS, AGG_LABEL, aggregate, numericColumns } from '../engine/data';
 import { shortHash, verifySeal } from '../engine/signature';
 import { SAMPLES } from '../data/samples';
 import { SignatureLibrary } from '../components/Signatures';
+import { SubmitModal } from '../components/Reminders';
+import { FilledPreview } from '../components/FilledPreview';
+import { buildFilledPdf } from '../engine/fillPdf';
+import { buildFilledDocx } from '../engine/fillDocx';
+import { getOriginal } from '../engine/originals';
 import { fieldByKey, sectionLabel } from '../engine/template';
 import { useStore } from '../store/useStore';
 import { Topbar } from '../App';
@@ -40,6 +46,15 @@ export function Assemble() {
   const [emailTo, setEmailTo] = useState('');
   const [sentTo, setSentTo] = useState<{ to: string; at: number; url: string } | null>(null);
   const [menu, setMenu] = useState(false);
+  const [aiOn, setAiOn] = useState(false);
+  const [submitOpen, setSubmitOpen] = useState(false);
+  const [preview, setPreview] = useState<'original' | 'clean'>('original');
+  const reopenDoc = useStore((s) => s.reopenDoc);
+  const switchTemplate = useStore((s) => s.switchTemplate);
+  const [aiReview, setAiReview] = useState<{ findings: Finding[]; snapshot: string; at: number } | null>(null);
+  const [reviewing, setReviewing] = useState(false);
+  const [reviewErr, setReviewErr] = useState<string | null>(null);
+  useEffect(() => { void aiAvailable().then(setAiOn); }, []);
 
   const start = (templateId: string) => { const d = createDoc(templateId); if (d) nav('/assemble/' + d.id); };
 
@@ -58,19 +73,37 @@ export function Assemble() {
   // the seal joins the pre-submission checks once a document is signed
   const allChecks = useMemo(() => (!doc?.signature ? checks : [...checks, { id: 'seal', label: 'Signature seal matches the content', ok: sealState === 'valid', detail: sealState === 'valid' ? doc.signature.signer + ' signed this exact content on ' + new Date(doc.signature.signedAt).toLocaleString() + ' · SHA-256 ' + shortHash(doc.signature.hash) : 'The document changed after ' + doc.signature.signer + ' signed it — the seal ' + shortHash(doc.signature.hash) + ' no longer matches. Sign again, or remove the signature.' }]), [checks, doc, sealState]);
   const passedAll = allChecks.filter((c) => c.ok).length;
+  const valuesSnapshot = JSON.stringify(values);
+  const runAiReview = async () => {
+    if (!template || !doc) return;
+    setReviewing(true); setReviewErr(null);
+    try { setAiReview({ findings: await reviewDocument(template, values, settings.signatories), snapshot: valuesSnapshot, at: Date.now() }); }
+    catch (e) { setReviewErr((e instanceof Error ? e.message : 'Qwen review failed.') + ' The rule-based checks above still apply.'); }
+    finally { setReviewing(false); }
+  };
 
-  const exportAs = async (kind: 'pdf' | 'docx' | 'html') => {
+  const exportAs = async (kind: 'pdf' | 'docx' | 'html' | 'cleanpdf') => {
     if (!doc || !template) return;
     if (missing.length) { toast('Cannot export — fill the mandatory field' + (missing.length > 1 ? 's' : '') + ': ' + missing.map((f) => f.label).join(', '), 'err'); return; }
     setBusy(kind);
     try {
       const inp = { template, doc, company: COMPANY };
       const name = doc.name.replace(/\.pdf$/, '.' + kind);
-      if (kind === 'pdf') saveBlob(await buildPdf(inp), name);
+      if (kind === 'pdf' && template.hasOriginal && template.ext === 'pdf') {
+        const o = await getOriginal(template.id);
+        if (o) { const r = await buildFilledPdf(o.bytes, template, doc); saveBlob(new Blob([r.bytes.slice().buffer], { type: 'application/pdf' }), name); if (r.plan.unplaced.length) toast('Not on the original page: ' + r.plan.unplaced.map((f) => f.label).join(', ') + ' — use Export clean PDF to include them', 'info'); }
+        else saveBlob(await buildPdf(inp), name);
+      }
+      else if (kind === 'pdf' || kind === 'cleanpdf') saveBlob(await buildPdf(inp), kind === 'cleanpdf' ? name.replace(/\.cleanpdf$/, '-clean.pdf') : name);
+      else if (kind === 'docx' && template.hasOriginal && template.ext === 'docx') {
+        const o = await getOriginal(template.id);
+        if (o) { const r = await buildFilledDocx(o.bytes, template, doc); saveBlob(new Blob([r.bytes.slice().buffer], { type: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document' }), name); }
+        else saveBlob(await buildDocx(inp), name);
+      }
       else if (kind === 'docx') saveBlob(await buildDocx(inp), name);
       else saveBlob(new Blob([buildHtml(inp)], { type: 'text/html' }), name);
-      recordExport(doc.id, kind);
-      toast('Exported ' + name, 'ok');
+      recordExport(doc.id, kind === 'cleanpdf' ? 'pdf' : kind);
+      toast('Exported ' + (kind === 'cleanpdf' ? name.replace(/\.cleanpdf$/, '-clean.pdf') : name) + ((((kind === 'pdf' && template.ext === 'pdf') || (kind === 'docx' && template.ext === 'docx')) && template.hasOriginal) ? ' — filled onto the original form' : ''), 'ok');
     } catch (e) { toast('Export failed: ' + (e instanceof Error ? e.message : String(e)), 'err'); }
     finally { setBusy(null); }
   };
@@ -118,7 +151,7 @@ export function Assemble() {
           <div className="card" style={{ padding: 16, display: 'flex', flexDirection: 'column', gap: 12 }}>
             <div>
               <label className="lbl" htmlFor="tpl">Template</label>
-              <select id="tpl" className="input" value={doc?.templateId || ''} onChange={(e) => e.target.value && start(e.target.value)} data-testid="template-select" disabled={locked}>
+              <select id="tpl" className="input" value={doc?.templateId || ''} onChange={(e) => { const v = e.target.value; if (!v) return; if (doc && template) { const r = switchTemplate(doc.id, v); toast(r.message, r.ok ? 'ok' : 'err'); } else start(v); }} data-testid="template-select" disabled={locked}>
                 <option value="">{templates.length ? 'Choose a template…' : 'No templates — save one on the Templates screen'}</option>
                 {templates.map((t) => <option key={t.id} value={t.id}>{t.name} — {t.regimeShort}</option>)}
               </select>
@@ -126,7 +159,7 @@ export function Assemble() {
               {doc && template && <div className="hintl"><Ic.spark size={11} />{template.regime}</div>}
             </div>
             {doc && template && (
-              <FormFields template={template} doc={doc} values={values} latestWo={latestWo} signatories={settings.signatories} locked={locked} onChange={(k, v) => setDocValue(doc.id, k, v)} onBind={(k, b) => { bindField(doc.id, k, b); if (b) { const att = doc.attachments.find((a) => a.id === b.attachmentId); toast((att ? att.name : 'data') + ' → ' + AGG_LABEL[b.fn] + ' of ' + b.column + ' inserted', 'ok'); } }} />
+              <FormFields aiOn={aiOn} template={template} doc={doc} values={values} latestWo={latestWo} signatories={settings.signatories} locked={locked} onChange={(k, v) => setDocValue(doc.id, k, v)} onBind={(k, b) => { bindField(doc.id, k, b); if (b) { const att = doc.attachments.find((a) => a.id === b.attachmentId); toast((att ? att.name : 'data') + ' → ' + AGG_LABEL[b.fn] + ' of ' + b.column + ' inserted', 'ok'); } }} />
             )}
             {!doc && (
               <div className="empty" style={{ padding: '14px 8px' }} data-testid="assemble-empty">
@@ -155,6 +188,27 @@ export function Assemble() {
                   </div>
                 ))}
               </div>
+              {aiOn && (
+                <div style={{ marginTop: 12, paddingTop: 10, borderTop: '1px solid var(--line2)' }} data-testid="ai-review">
+                  <div className="row-between">
+                    <div style={{ fontSize: 12.5, fontWeight: 700 }}>Qwen second opinion <span style={{ fontWeight: 500, color: 'var(--ink2)' }}>· reads the whole document like a surveyor</span></div>
+                    <button className="btn sm ai" onClick={runAiReview} disabled={reviewing || locked} data-testid="ai-review-run">{reviewing ? <><span className="spinner" />Reviewing…</> : <><Ic.spark size={12} />{aiReview ? 'Review again' : 'Review with Qwen'}</>}</button>
+                  </div>
+                  {reviewErr && <div className="hintl bad" style={{ marginTop: 8 }} data-testid="ai-review-error"><Ic.alert size={11} /><span>{reviewErr}</span></div>}
+                  {aiReview && !reviewErr && (
+                    <div className="log" style={{ marginTop: 8 }} data-testid="ai-review-findings">
+                      {aiReview.snapshot !== valuesSnapshot && <div style={{ fontSize: 11, color: 'var(--amber-t)' }} data-testid="ai-review-stale">The document changed after this review — run it again.</div>}
+                      {aiReview.findings.length === 0 && <div data-testid="ai-review-clear"><span className="ok"><Ic.check size={13} /></span><span><b style={{ color: 'var(--ink)', fontWeight: 600 }}>No further problems found</b><br /><span style={{ fontSize: 11.5 }}>Qwen read the document as filed and found nothing a surveyor would query.</span></span></div>}
+                      {aiReview.findings.map((f, i) => (
+                        <div key={i} data-testid="ai-finding" data-severity={f.severity}>
+                          <span className={f.severity === 'issue' ? 'no' : 'wait'}>{f.severity === 'issue' ? <Ic.x size={12} /> : <Ic.alert size={12} />}</span>
+                          <span><b style={{ color: 'var(--ink)', fontWeight: 600 }}>{f.title}</b><br /><span style={{ fontSize: 11.5 }}>{f.detail}</span></span>
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
+              )}
             </div>
           )}
         </section>
@@ -172,11 +226,14 @@ export function Assemble() {
                 {hasSignatureBlock && !locked && <button className={'btn' + (sealState === 'valid' ? ' ai' : '')} onClick={() => setSignOpen((v) => !v)} data-testid="sign-button" title={signerName ? 'Sign as ' + signerName : 'Fill the signatory field, then sign'}><Ic.pen size={13} />{sealState === 'valid' ? 'Signed' : sealState === 'broken' ? 'Re-sign' : 'Sign'}</button>}
                 {doc.status === 'draft' && <button className="btn ai" onClick={review} data-testid="mark-reviewed" title={missing.length ? 'Fill the mandatory fields first' : ''}><Ic.check size={13} />Mark reviewed</button>}
                 <button className="btn" onClick={() => exportAs('docx')} disabled={!!busy || missing.length > 0} data-testid="export-docx" title={missing.length ? 'Missing: ' + missing.map((f) => f.label).join(', ') : ''}><Ic.word />Word</button>
+                {doc.status === 'reviewed' && <button className="btn" onClick={() => setSubmitOpen(true)} data-testid="mark-submitted" title="Record a submission made by portal, courier or in person"><Ic.check size={13} />Mark submitted</button>}
+                {doc.status === 'sent' && doc.submittedVia === 'manual' && <button className="btn" onClick={() => { if (window.confirm('Undo the recorded submission? The document goes back to Reviewed.')) { reopenDoc(doc.id); toast('Submission undone — back to Reviewed', 'ok'); } }} data-testid="undo-submitted">Undo submission</button>}
                 <button className="btn" onClick={() => setEmailOpen((v) => !v)} disabled={doc.status === 'draft' || missing.length > 0} data-testid="export-email" title={doc.status === 'draft' ? 'Mark reviewed before sending' : ''}><Ic.mail />Email</button>
                 <button className="btn primary" onClick={() => exportAs('pdf')} disabled={!!busy || missing.length > 0} data-testid="export-pdf" title={missing.length ? 'Missing: ' + missing.map((f) => f.label).join(', ') : ''}>{busy === 'pdf' ? <span className="spinner" /> : <Ic.download />}Export PDF</button>
                 <button className="ib" aria-label="More export options" onClick={() => setMenu((v) => !v)} data-testid="export-more"><Ic.dots /></button>
                 {menu && (
                   <div className="menu" onMouseLeave={() => setMenu(false)} data-testid="export-menu">
+                    {template.hasOriginal && template.ext === 'pdf' && <button onClick={() => { setMenu(false); exportAs('cleanpdf'); }} data-testid="export-clean-pdf"><Ic.file size={14} />Export clean PDF (re-typeset)</button>}
                     <button onClick={() => { setMenu(false); exportAs('html'); }} data-testid="export-html"><Ic.file size={14} />Export HTML</button>
                     <button onClick={() => { setMenu(false); print(); }} data-testid="export-print"><Ic.print size={14} />Print…</button>
                   </div>
@@ -203,6 +260,7 @@ export function Assemble() {
             )}
           </div>
 
+          {submitOpen && doc && <SubmitModal docId={doc.id} onClose={() => setSubmitOpen(false)} />}
           {seal && doc && (
             <div className={'rulecard ' + (seal.state === 'valid' ? 'in' : 'out')} style={{ flexShrink: 0 }} data-testid="seal-card" data-state={seal.state}>
               <Ic.shield size={15} />
@@ -220,7 +278,14 @@ export function Assemble() {
           {locked && !sentTo && <div className="rulecard in" style={{ flexShrink: 0 }}><Ic.check size={14} /><span>This document was sent{doc?.sentAt ? ' on ' + new Date(doc.sentAt).toLocaleDateString() : ''} and is locked. Start a new document to make changes.</span></div>}
 
           <div className="paper-wrap">
-            {doc && template ? <Paper fields={template.fields} sections={template.sections} mode="live" values={values} seal={seal} /> : doc && !template ? (
+            {doc && template && template.hasOriginal && (template.ext === 'pdf' || template.ext === 'docx') && (
+              <div className="seg" style={{ marginBottom: 10 }} data-testid="preview-toggle">
+                <button className={preview === 'original' ? 'on' : ''} onClick={() => setPreview('original')} data-testid="preview-original">Filled original form</button>
+                <button className={preview === 'clean' ? 'on' : ''} onClick={() => setPreview('clean')} data-testid="preview-clean">Clean layout</button>
+              </div>
+            )}
+            {doc && template && template.hasOriginal && (template.ext === 'pdf' || template.ext === 'docx') && preview === 'original' ? <FilledPreview template={template} doc={doc} />
+              : doc && template ? <Paper fields={template.fields} sections={template.sections} mode="live" values={values} seal={seal} /> : doc && !template ? (
               <div className="paper" data-testid="snapshot-paper"><h2 style={{ fontFamily: 'var(--font-h)', fontSize: 16 }}>{doc.templateName}</h2><p style={{ color: '#555', fontSize: 12 }}>Template deleted — values recorded at the time:</p>{Object.entries(doc.values).map(([k, v]) => <p key={k}><span className="plbl">{k}: </span><b>{v || '—'}</b></p>)}</div>
             ) : (
               <div className="paper empty" style={{ minHeight: 320 }} data-testid="preview-empty">
@@ -235,8 +300,13 @@ export function Assemble() {
   );
 }
 
-function FormFields({ template, doc, values, latestWo, signatories, locked, onChange, onBind }: { template: Template; doc: Doc; values: Record<string, string>; latestWo: Doc | undefined; signatories: string[]; locked: boolean; onChange: (k: string, v: string) => void; onBind: (k: string, b: { attachmentId: string; column: string; fn: AggFn } | null) => void }) {
+function FormFields({ aiOn, template, doc, values, latestWo, signatories, locked, onChange, onBind }: { aiOn: boolean; template: Template; doc: Doc; values: Record<string, string>; latestWo: Doc | undefined; signatories: string[]; locked: boolean; onChange: (k: string, v: string) => void; onBind: (k: string, b: { attachmentId: string; column: string; fn: AggFn } | null) => void }) {
+  const toast = useStore((st) => st.toast);
   const sections = template.sections.filter((s) => !s.title || s.lines.some((l) => l.kind === 'pair'));
+  const draft = (f: Field) => async () => {
+    try { onChange(f.key, await draftField(template, f, values)); toast('Drafted “' + f.label + '” with Qwen — read it and edit before filing', 'ok'); }
+    catch (e) { if (!(values[f.key] || '').trim() && f.sample) onChange(f.key, f.sample); toast((e instanceof Error ? e.message : 'Qwen failed.') + (f.sample ? ' Inserted the wording from the original form instead.' : ''), 'err'); }
+  };
   const controllers = new Map<string, Section[]>();
   for (const s of template.sections) if (s.rule) controllers.set(s.rule.field, [...(controllers.get(s.rule.field) || []), s]);
   return (
@@ -261,7 +331,7 @@ function FormFields({ template, doc, values, latestWo, signatories, locked, onCh
                 const wide = f.type === 'text' && (f.sample.length > 28 || /desc|activity|control|hazard|measures/.test(k));
                 return (
                   <div key={k} style={{ gridColumn: wide || f.type === 'yesno' ? '1 / -1' : undefined }}>
-                    <FieldInput f={f} value={values[k] || ''} locked={locked} onChange={(v) => onChange(k, v)} hint={hintFor(f, values[k] || '', doc, latestWo, signatories)} attachments={f.type === 'number' ? doc.attachments : []} binding={doc.bindings.find((b) => b.key === k) || null} onBind={(b) => onBind(k, b)} />
+                    <FieldInput f={f} value={values[k] || ''} locked={locked} onChange={(v) => onChange(k, v)} onDraft={aiOn && wide && f.type === 'text' && !locked ? draft(f) : undefined} hint={hintFor(f, values[k] || '', doc, latestWo, signatories)} attachments={f.type === 'number' ? doc.attachments : []} binding={doc.bindings.find((b) => b.key === k) || null} onBind={(b) => onBind(k, b)} />
                     {controllers.has(k) && controllers.get(k)!.map((cs) => { const r = evaluateRule(cs.rule, values, cs, template.fields); return (
                       <div key={cs.id} className={'rulecard ' + (r.included ? 'in' : 'out')} style={{ marginTop: 8 }} data-testid="rule-card" data-section={cs.id} data-included={r.included}>
                         <Ic.rule /><span>Rule: <b>{sectionLabel(cs)}</b> is <b>{r.included ? 'INCLUDED' : 'OMITTED'}</b> because {ruleText({ ...cs.rule!, value: values[k] || '(empty)' })}. Included when {ruleText(cs.rule!)}.</span>
@@ -289,9 +359,10 @@ function hintFor(f: Field, value: string, doc: Doc, latest: Doc | undefined, sig
   return null;
 }
 
-function FieldInput({ f, value, locked, onChange, hint, attachments = [], binding = null, onBind }: { f: Field; value: string; locked: boolean; onChange: (v: string) => void; hint: { text: string; kind: 'ai' | 'ok' | 'bad' } | null; attachments?: Attachment[]; binding?: Binding | null; onBind?: (b: { attachmentId: string; column: string; fn: AggFn } | null) => void }) {
+function FieldInput({ f, value, locked, onChange, onDraft, hint, attachments = [], binding = null, onBind }: { f: Field; value: string; locked: boolean; onChange: (v: string) => void; onDraft?: () => Promise<void>; hint: { text: string; kind: 'ai' | 'ok' | 'bad' } | null; attachments?: Attachment[]; binding?: Binding | null; onBind?: (b: { attachmentId: string; column: string; fn: AggFn } | null) => void }) {
   const id = 'f_' + f.key;
   const [calc, setCalc] = useState(false);
+  const [drafting, setDrafting] = useState(false);
   const [attId, setAttId] = useState(attachments[0]?.id || '');
   const att = attachments.find((a) => a.id === attId) || attachments[0] || null;
   const [col, setCol] = useState('');
@@ -306,6 +377,9 @@ function FieldInput({ f, value, locked, onChange, hint, attachments = [], bindin
     <div>
       <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 6 }}>
         <label className="lbl" htmlFor={id} style={{ marginBottom: 5 }}>{f.label}{f.required && <span style={{ color: 'var(--red)' }}> *</span>}</label>
+        {onDraft && (
+          <button className="sigma" style={{ width: 'auto', padding: '0 8px', gap: 4, display: 'inline-flex', alignItems: 'center' }} disabled={drafting} onClick={async () => { setDrafting(true); try { await onDraft(); } finally { setDrafting(false); } }} title="Draft this entry from the rest of the document with Qwen" aria-label={'Draft ' + f.label + ' with Qwen'} data-testid={'draft-' + f.key}>{drafting ? <span className="spinner" style={{ borderColor: 'rgba(0,0,0,.2)', borderTopColor: 'var(--blue-d)' }} /> : <Ic.spark size={11} />}<span style={{ fontSize: 11, fontWeight: 700 }}>{drafting ? 'Drafting…' : 'Draft'}</span></button>
+        )}
         {f.type === 'number' && onBind && !locked && (
           <button className={'sigma' + (binding ? ' on' : '')} onClick={() => setCalc((v) => !v)} title={attachments.length ? 'Calculate from attached data' : 'Attach a CSV / TSV below to calculate this field'} aria-label={'Calculate ' + f.label + ' from data'} data-testid={'calc-' + f.key}>Σ</button>
         )}

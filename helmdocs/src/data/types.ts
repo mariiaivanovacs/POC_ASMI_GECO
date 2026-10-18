@@ -42,6 +42,8 @@ export interface DetectionLog {
   signatureBlocks: number;
   regime: string;
   ms: number;
+  /** Qwen refinement of the rule-engine result: absent = offline only; note explains a fallback. */
+  ai?: { used: boolean; added: number; changed: number; note?: string };
 }
 
 export interface Template {
@@ -58,6 +60,8 @@ export interface Template {
   manualMinutes: number; // demo baseline: minutes to draft this form by hand
   createdAt: number;
   seeded: boolean;
+  /** The original uploaded file is stored (IndexedDB, same id) — step 1 shows it and the export writes onto it. */
+  hasOriginal?: boolean;
 }
 
 /** A data file attached to a document (CSV / TSV); its columns feed calculated fields. */
@@ -88,6 +92,10 @@ export interface Doc {
   signature: Seal | null;
   versions: Version[];
   seeded: boolean;
+  /** How it was submitted: handed to the mail client, or recorded by hand (portal upload, courier, in person). */
+  submittedVia?: 'email' | 'manual';
+  /** Optional receipt / portal reference recorded with a manual submission. */
+  submittedRef?: string;
 }
 
 export interface Upload {
@@ -107,6 +115,7 @@ export interface Upload {
   regime: string;
   regimeShort: string;
   createdAt: number;
+  hasOriginal?: boolean;
 }
 
 /** A stored handwritten signature: transparent PNG as a data URL, owned by one signatory. */

@@ -64,7 +64,9 @@ export function Library() {
     toast(d.name + ' → ' + STATUS_LABEL[status], 'ok');
   };
 
-  const result = useMemo(() => search(docs, query), [docs, query]);
+  const templatesAll = useStore((s) => s.templates);
+  const rulesAll = useStore((s) => s.settings.deadlines);
+  const result = useMemo(() => search(docs, query, 20, { templates: templatesAll, rules: rulesAll }), [docs, query, templatesAll, rulesAll]);
   const sugg = useMemo(() => suggestions(docs), [docs]);
 
   return (
@@ -208,7 +210,8 @@ export function Library() {
           {result.tokens.length > 0 && (
             <>
               <div style={{ marginTop: 12, padding: '9px 11px', borderRadius: 10, background: 'rgba(143,125,255,.08)', border: '1px solid rgba(143,125,255,.2)', fontSize: 12, color: '#d3dedb', lineHeight: 1.45 }} data-testid="assistant-answer">
-                {result.hits.length ? 'Found ' + result.hits.length + ' document' + (result.hits.length === 1 ? '' : 's') + ' for “' + query + '”, best match first.'
+                {!result.hits.length && result.filters.length ? 'No documents are ' + result.filters.join(' and ') + (result.words.length ? ' for “' + result.words.join(' ') + '”' : '') + ' right now.'
+                  : result.hits.length ? (result.exact ? 'Found ' + (result.total > result.hits.length ? result.total + ' documents (showing ' + result.hits.length + ')' : result.hits.length + ' document') + (result.total > result.hits.length || result.hits.length === 1 ? '' : 's') : 'No document matches every word — ' + result.hits.length + ' closest match' + (result.hits.length === 1 ? '' : 'es')) + ' for “' + query + '”' + (result.filters.length ? ' · ' + result.filters.join(' · ') : '') + ', best match first.'
                   : 'Nothing in the library matches “' + query + '”. Try a vessel name (MV Ocean Pioneer, Sea Falcon 7), a work-order number, a regime (IHM, SHMS, bizSAFE, PTW) or a status (pending, sent).'}
               </div>
               <div className="stack" style={{ marginTop: 8, overflow: 'auto', maxHeight: 300, flexShrink: 0 }} data-testid="assistant-results">

@@ -472,3 +472,10 @@ body { background: var(--bg); color: var(--ink); }
 .cd.ok { background: rgba(79,209,139,.12); color: #7fe3ad; }
 .miss { display: inline-block; padding: 2px 7px; border-radius: 6px; font-size: 10.5px; font-weight: 600; background: rgba(227,73,72,.12); color: #ff9b9a; margin: 4px 4px 0 0; }
 .miss.ok { background: rgba(79,209,139,.12); color: #7fe3ad; }
+/* the original Word / text document, with detected fields highlighted in place */
+.original-docx { color: #1b1b1b; line-height: 1.55; font-size: 13.5px; }
+.original-docx p { margin: 0 0 6px; }
+.original-docx h1, .original-docx h2, .original-docx h3 { color: #111; margin: 10px 0 6px; }
+.original-docx table { border-collapse: collapse; margin: 6px 0; }
+.original-docx td, .original-docx th { border: 1px solid #bbb; padding: 3px 6px; }
+mark.ohl { background: rgba(59,130,246,.2); border-bottom: 2px solid rgba(59,130,246,.85); border-radius: 3px; color: inherit; padding: 0 1px; cursor: help; }

@@ -7,6 +7,7 @@ import { useStore } from '../store/useStore';
 import { Topbar } from '../App';
 import { Ic, regimeColor, regimeIcon } from '../components/ui/Icons';
 import { Paper, type PaperMode, type PaperSelection } from '../components/Paper';
+import { OriginalView } from '../components/OriginalView';
 
 const STAGE_LABEL: Record<string, string> = { reading: 'Reading the file', detecting: 'Detecting variable fields', templating: 'Building the dynamic template', ready: 'Ready' };
 
@@ -99,6 +100,7 @@ export function Templates() {
   const values = sampleValues(fields);
   const stats = templateStats({ fields, sections });
   const fileName = sel ? (isUpload ? (sel as Upload).fileName : (sel as Template).name) : '';
+  const hasOrig = !!sel && !!(sel as { hasOriginal?: boolean }).hasOriginal;
   const ext = sel ? sel.ext : '';
   const formCode = sel ? (sections[0]?.lines.find((l) => l.kind === 'text' && /^form\b/i.test(l.text)) as { text: string } | undefined)?.text : undefined;
   const sigBlocks = signatureFields(fields, sections);
@@ -155,12 +157,12 @@ export function Templates() {
                     <div style={{ fontSize: 13, fontWeight: 700, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }} data-testid="doc-name">{fileName}</div>
                     <div style={{ fontSize: 11, color: 'var(--ink2)' }} data-testid="doc-meta">
                       {isUpload ? statusText(sel as Upload) : (sel as Template).pages + ' pages · saved template · ' + (sel as Template).regimeShort}
-                      {' · '}{mode === 'static' ? 'viewing original document' : mode === 'dynamic' ? 'viewing as dynamic template' : ''}
+                      {' · '}{mode === 'static' ? (hasOrig ? 'the file exactly as uploaded · detected fields highlighted' : 'reconstructed text — the original file is not stored for this template') : mode === 'dynamic' ? 'viewing as dynamic template' : ''}
                     </div>
                   </div>
                 </div>
                 <div className="seg" data-testid="mode-toggle">
-                  <button className={mode === 'static' ? 'on' : ''} onClick={() => setMode('static')} data-testid="mode-static">Static form</button>
+                  <button className={mode === 'static' ? 'on' : ''} onClick={() => setMode('static')} data-testid="mode-static">Original document</button>
                   <button className={mode === 'dynamic' ? 'on' : ''} onClick={() => setMode('dynamic')} data-testid="mode-dynamic">Dynamic template</button>
                 </div>
               </div>
@@ -181,7 +183,9 @@ export function Templates() {
                   <div className="paper empty" data-testid="paper-state" data-status="empty">Nothing to show.</div>
                 ) : (
                   <div style={{ position: 'relative' }}>
-                    <Paper fields={fields} sections={sections} mode={mode} values={values} formCode={formCode} onSelect={onSelect} />
+                    {mode === 'static' && hasOrig
+                      ? <OriginalView ownerId={sel.id} fields={fields} />
+                      : <Paper fields={fields} sections={sections} mode={mode} values={values} formCode={formCode} onSelect={onSelect} />}
                     {selection && (
                       selection.lineIndex >= 0 ? (
                         <div className="menu addfield" style={{ left: Math.max(150, Math.min(selection.x, 470)), top: selection.y + 8, transform: 'translateX(-50%)' }} onMouseDown={(e) => e.stopPropagation()} data-testid="add-field-popover">
@@ -283,7 +287,7 @@ function DetectionCard({ sel, isUpload, stats }: { sel: Upload | Template | null
         <div className="mark"><Ic.spark size={16} /></div>
         <div>
           <div style={{ fontSize: 14, fontWeight: 700, fontFamily: 'var(--font-h)' }}>AI template detection</div>
-          <div style={{ fontSize: 11, color: 'var(--blue-d)' }}>{status === 'detected' ? 'Offline engine read the form · ' + (ms >= 1000 ? (ms / 1000).toFixed(1) + ' s' : ms + ' ms') : status === 'processing' ? STAGE_LABEL[u!.stage || 'reading'] + '…' : status === 'failed' ? 'Could not read the file' : 'Waiting for a form'}</div>
+          <div style={{ fontSize: 11, color: 'var(--blue-d)' }}>{status === 'detected' ? (det && det.ai?.used ? 'Offline engine + Qwen read the form · ' : 'Offline engine read the form · ') + (ms >= 1000 ? (ms / 1000).toFixed(1) + ' s' : ms + ' ms') : status === 'processing' ? STAGE_LABEL[u!.stage || 'reading'] + '…' : status === 'failed' ? 'Could not read the file' : 'Waiting for a form'}</div>
         </div>
         <span className={'pill ' + (status === 'detected' ? 'ok' : status === 'processing' ? 'run' : status === 'failed' ? 'err' : 'none')} style={{ marginLeft: 'auto' }}><span className="dot" />{status === 'detected' ? 'Ready' : status === 'processing' ? 'Working' : status === 'failed' ? 'Failed' : 'Idle'}</span>
       </div>
@@ -301,6 +305,7 @@ function DetectionCard({ sel, isUpload, stats }: { sel: Upload | Template | null
           <div><Tick ok={stats.fields > 0} /><span>Found {stats.fields} variable field{stats.fields === 1 ? '' : 's'}{stats.fields === 0 ? ' — this form cannot become a template' : ''}</span></div>
           <div><Tick ok={stats.conditional > 0} wait={stats.conditional === 0} /><span>{stats.conditional > 0 ? 'Found ' + stats.conditional + ' conditional section' + (stats.conditional === 1 ? '' : 's') + ' (' + sel!.sections.filter((s) => s.rule).map((s) => s.heading.split(' ')[0].replace('.', '')).map((n) => 'Section ' + n).join(', ') + ')' : 'No conditional section found — no Yes/No field controls a later section'}</span></div>
           <div><Tick ok={stats.signature > 0} wait={stats.signature === 0} /><span data-testid="log-signature">{stats.signature > 0 ? 'Found ' + stats.signature + ' signature block' + (stats.signature === 1 ? '' : 's') + ' — ' + signatureFields(sel!.fields, sel!.sections).map((b) => sectionLabelOf(b.section.heading) + (b.signatory ? ': signed by {{' + b.signatory.key + '}}' : '') + (b.date ? ', dated {{' + b.date.key + '}}' : '')).join('; ') : 'No signature block found — no “Signature” line or ______ rule in the form'}</span></div>
+          {det.ai && <div data-testid="log-ai"><Tick ok={det.ai.used} wait={!det.ai.used} /><span>{det.ai.used ? 'Qwen second pass: added ' + det.ai.added + ' field' + (det.ai.added === 1 ? '' : 's') + ' the rules missed, adjusted ' + det.ai.changed : det.ai.note}</span></div>}
           <div><Tick ok={!/not recognised/.test(regime)} wait={/not recognised/.test(regime)} /><span>{/not recognised/.test(regime) ? 'Regime not recognised — the pre-submission check will flag this' : 'Matched to regime: ' + regime}</span></div>
         </>}
       </div>

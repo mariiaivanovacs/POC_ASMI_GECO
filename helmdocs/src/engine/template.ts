@@ -124,3 +124,61 @@ export function signatureFields(fields: Field[], sections: Section[]): { section
     return { section: s, signatory: fs.find((f) => f.role === 'signatory') || null, date: fs.find((f) => f.type === 'date') || null };
   });
 }
+
+// ---------------------------------------------------------------------------------------------------------------------
+// Switching a document to another template: carry what was already typed over to the matching fields
+// ---------------------------------------------------------------------------------------------------------------------
+const STOPWORDS = new Set(['of', 'the', 'no', 'number', 'nr', 'ref', 'a', 'an', 'and', 'for', 'on', 'if', 'applicable', 'name']);
+const UNIQUE_ROLES = new Set(['vessel', 'imo', 'workorder', 'company', 'signatory']);
+const labelTokens = (l: string) => l.toLowerCase().replace(/[^a-z0-9 ]+/g, ' ').split(/\s+/).filter((w) => w && !STOPWORDS.has(w));
+const normLabel = (l: string) => labelTokens(l).join(' ');
+function overlap(a: string, b: string): number {
+  const A = new Set(labelTokens(a)), B = new Set(labelTokens(b));
+  if (!A.size || !B.size) return 0;
+  let n = 0; for (const x of A) if (B.has(x)) n++;
+  return n / Math.max(A.size, B.size);
+}
+function fits(to: Field, value: string): boolean {
+  if (to.type === 'yesno') return /^(yes|no)$/i.test(value.trim());
+  if (to.type === 'number') return /\d/.test(value);
+  return true;
+}
+
+export interface Carry { values: Record<string, string>; carried: { from: Field | null; to: Field; how: string }[]; toFill: Field[] }
+
+/**
+ * Map a document's values onto another template's fields: same key → same role (vessel, IMO, work order, company,
+ * signatory) → same label → similar label of a compatible type. Old values stay in the bag, so switching back restores them.
+ */
+export function carryValues(fromFields: Field[], values: Record<string, string>, toFields: Field[]): Carry {
+  const out: Record<string, string> = { ...values };
+  const carried: Carry['carried'] = [];
+  const toFill: Field[] = [];
+  const filled = fromFields.filter((f) => (values[f.key] || '').trim());
+  const usedGeneric = new Set<string>();
+  for (const to of toFields) {
+    const have = (values[to.key] || '').trim();
+    if (have && fits(to, have)) { carried.push({ from: fromFields.find((f) => f.key === to.key) || null, to, how: 'same field' }); continue; }
+    let src: Field | undefined; let how = '';
+    // a role alone is only trusted when it is unambiguous on both sides (one vessel field here, one there); reference
+    // codes all look like "work orders" to the detector, so those also need the label to agree
+    if (UNIQUE_ROLES.has(to.role) && toFields.filter((x) => x.role === to.role).length === 1) {
+      const cands = filled.filter((f) => f.role === to.role);
+      if (cands.length === 1 && (to.role !== 'workorder' || overlap(cands[0].label, to.label) >= 0.5)) { src = cands[0]; how = 'same meaning'; }
+    }
+    if (!src) { src = filled.find((f) => !usedGeneric.has(f.key) && normLabel(f.label) === normLabel(to.label) && normLabel(to.label)); how = 'same label'; }
+    if (!src) {
+      const best = filled.filter((f) => !usedGeneric.has(f.key) && (f.type === to.type || (to.type === 'text' && f.type !== 'yesno'))).map((f) => ({ f, s: overlap(f.label, to.label) })).sort((a, b) => b.s - a.s)[0];
+      if (best && best.s >= 0.6) { src = best.f; how = 'similar label'; }
+    }
+    if (src && fits(to, values[src.key])) {
+      out[to.key] = values[src.key];
+      if (how !== 'same meaning') usedGeneric.add(src.key);
+      carried.push({ from: src, to, how });
+    } else {
+      if (!(out[to.key] || '').trim()) out[to.key] = '';
+      toFill.push(to);
+    }
+  }
+  return { values: out, carried, toFill };
+}

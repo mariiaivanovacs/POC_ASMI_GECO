@@ -124,7 +124,7 @@ function MaterialRow({ m, selected, count, onSelect, onProcess, onDelete, onCate
             {m.pages ? m.pages + (m.ext === 'pptx' ? ' slides' : ' pages') + ' · ' : ''}
             {m.status === 'processed' ? count + ' exercises · ' + m.langs.map((l) => ({ en: 'EN', bm: 'BM', zh: '中文' }[l])).join(', ') : m.status === 'failed' ? m.error : m.status === 'processing' ? (m.note || STAGE_LABEL[m.stage || 'reading']) : m.kind}
           </span>
-          {m.status === 'processed' && <span className={'tag' + (m.source === 'deepseek' ? '' : ' g')} title={m.note || ''} data-testid="source-badge">{m.source === 'deepseek' ? 'DeepSeek' : 'Offline'}</span>}
+          {m.status === 'processed' && <span className={'tag' + (m.source === 'deepseek' ? '' : ' g')} title={m.note || ''} data-testid="source-badge">{m.source === 'deepseek' ? 'Qwen' : 'Offline'}</span>}
         </div>
         {m.status === 'processing' && (
           <div style={{ marginTop: 8, display: 'flex', alignItems: 'center', gap: 10 }}>

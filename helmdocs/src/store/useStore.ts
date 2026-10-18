@@ -4,7 +4,9 @@ import type { AggFn, DeadlineRule, Doc, DocStatus, ExportKind, Field, FieldType,
 import { DEFAULT_SETTINGS, buildSeed, fmtDate } from '../data/seed';
 import { ExtractError, extOf, extractText, kindOf } from '../engine/extract';
 import { detectFields } from '../engine/fields';
-import { addFieldFromSelection, buildTemplate, deleteField, renameField, retypeField, sampleValues } from '../engine/template';
+import { aiAvailable, refineDetection } from '../engine/llm';
+import { deleteOriginal, moveOriginal, putOriginal } from '../engine/originals';
+import { addFieldFromSelection, buildTemplate, carryValues, deleteField, renameField, retypeField, sampleValues } from '../engine/template';
 import { aggregate, parseTable } from '../engine/data';
 import { makeSeal } from '../engine/signature';
 import { docFileName, docVessel } from '../engine/assemble';
@@ -33,8 +35,11 @@ interface State {
   saveTemplate: (uploadId: string, name?: string) => Template | null;
   deleteTemplate: (id: string) => number;
   createDoc: (templateId: string) => Doc | null;
+  switchTemplate: (docId: string, templateId: string) => { ok: boolean; message: string; carried: string[]; toFill: string[] };
   setDocValue: (docId: string, key: string, value: string) => void;
   setDocStatus: (docId: string, status: DocStatus) => boolean;
+  markSubmitted: (docId: string, at: number, ref: string) => { ok: boolean; message: string };
+  reopenDoc: (docId: string) => boolean;
   recordExport: (docId: string, kind: ExportKind) => void;
   deleteDoc: (id: string) => void;
   setSignatories: (list: string[]) => void;
@@ -135,19 +140,30 @@ export const useStore = create<State>()(
             const r = await extractText(file, (pct) => patch({ pct: Math.round(pct * 0.6) }));
             text = r.text; pages = r.pages;
             patch({ text, pages, kind: r.kind, ext: r.ext });
+            try { await putOriginal(id, { name: file.name, ext: r.ext, bytes: await file.arrayBuffer() }); patch({ hasOriginal: true }); } catch { /* the reconstructed view still works */ }
           }
           patch({ stage: 'detecting' as Stage, pct: 65 });
           await new Promise((r) => setTimeout(r, 120));
           const d = detectFields(text);
           patch({ stage: 'templating' as Stage, pct: 85 });
           await new Promise((r) => setTimeout(r, 120));
-          const built = buildTemplate(d);
+          let built = buildTemplate(d);
+          let ai: { used: boolean; added: number; changed: number; note?: string } | undefined;
+          // Qwen second pass over the rule-engine result; any failure keeps the offline result and says so
+          if (await aiAvailable()) {
+            patch({ stage: 'templating' as Stage, pct: 88 });
+            try {
+              const r = await refineDetection(text, { ...d, ...built });
+              built = { fields: r.fields, sections: r.sections };
+              ai = { used: true, added: r.added, changed: r.changed };
+            } catch (e) { ai = { used: false, added: 0, changed: 0, note: (e instanceof Error ? e.message : 'Qwen failed.') + ' Kept the offline engine result.' }; }
+          }
           const ms = Math.round(performance.now() - t0);
           patch({
             status: 'detected', stage: 'ready', pct: 100, fields: built.fields, sections: built.sections, regime: d.regime, regimeShort: d.regimeShort,
-            detection: { pages, fieldsFound: d.fields.length, conditionalSections: d.conditionalSections, signatureBlocks: d.signatureBlocks, regime: d.regime, ms },
+            detection: { pages, fieldsFound: built.fields.length, conditionalSections: d.conditionalSections, signatureBlocks: d.signatureBlocks, regime: d.regime, ms, ai },
           });
-          get().toast(d.fields.length ? d.fields.length + ' fields detected in ' + u.fileName : 'No variable fields detected in ' + u.fileName, d.fields.length ? 'ok' : 'err');
+          get().toast(built.fields.length ? built.fields.length + ' fields detected in ' + u.fileName + (ai?.used ? ' (Qwen added ' + ai.added + ', adjusted ' + ai.changed + ')' : '') : 'No variable fields detected in ' + u.fileName, built.fields.length ? 'ok' : 'err');
         } catch (e) {
           const msg = e instanceof ExtractError ? e.message : e instanceof Error ? e.message : 'Processing failed.';
           patch({ status: 'failed', stage: null, pct: 0, error: msg });
@@ -155,7 +171,7 @@ export const useStore = create<State>()(
         }
       },
 
-      deleteUpload: (id) => { files.delete(id); set({ uploads: get().uploads.filter((u) => u.id !== id) }); },
+      deleteUpload: (id) => { files.delete(id); void deleteOriginal(id); set({ uploads: get().uploads.filter((u) => u.id !== id) }); },
 
       editField: (ownerId, key, patch) => {
         editOwner(get, set, ownerId, (fields, sections) => {
@@ -231,8 +247,9 @@ export const useStore = create<State>()(
         while (get().templates.some((t) => t.name === title)) title = base + ' (' + n++ + ')';
         const t: Template = {
           id: uid('t'), name: title, regime: u.regime, regimeShort: u.regimeShort, ext: u.ext, pages: u.pages, sourceText: u.text || '',
-          fields: u.fields, sections: u.sections, detection: u.detection, manualMinutes: 45, createdAt: Date.now(), seeded: false,
+          fields: u.fields, sections: u.sections, detection: u.detection, manualMinutes: 45, createdAt: Date.now(), seeded: false, hasOriginal: !!u.hasOriginal,
         };
+        if (u.hasOriginal) void moveOriginal(uploadId, t.id);
         files.delete(uploadId);
         set({ templates: [t, ...get().templates], uploads: get().uploads.filter((x) => x.id !== uploadId) });
         return t;
@@ -241,6 +258,7 @@ export const useStore = create<State>()(
       deleteTemplate: (id) => {
         const affected = get().docs.filter((d) => d.templateId === id).length;
         set({ templates: get().templates.filter((t) => t.id !== id) });
+        void deleteOriginal(id);
         return affected; // documents keep their template snapshot
       },
 
@@ -269,6 +287,23 @@ export const useStore = create<State>()(
         return d;
       },
 
+      switchTemplate: (docId, templateId) => {
+        const d = get().docs.find((x) => x.id === docId);
+        const to = get().templates.find((x) => x.id === templateId);
+        if (!d || !to) return { ok: false, message: 'Template not found.', carried: [], toFill: [] };
+        if (d.status === 'sent') return { ok: false, message: 'Submitted documents are locked — start a new document instead.', carried: [], toFill: [] };
+        if (d.templateId === templateId) return { ok: true, message: 'Already on this template.', carried: [], toFill: [] };
+        const from = get().templates.find((x) => x.id === d.templateId);
+        const r = carryValues(from?.fields || [], d.values, to.fields);
+        // fields nothing carried into get the same pre-fill a new document would (company from the form, dates today)
+        for (const f of r.toFill) { if (f.role === 'company' && f.sample) r.values[f.key] = f.sample; else if (f.type === 'date') r.values[f.key] = fmtDate(Date.now()); }
+        const keys = new Set(to.fields.map((f) => f.key));
+        const note = 'Template switched from ' + (from?.name || d.templateName) + ' to ' + to.name + ' (' + r.carried.length + ' values carried over)';
+        set({ docs: get().docs.map((x) => (x.id === docId ? snapshot({ ...x, templateId: to.id, templateName: to.name, regimeShort: to.regimeShort, values: r.values, status: 'draft', reviewedAt: null, signature: null, bindings: x.bindings.filter((b) => keys.has(b.key)), manualMinutes: to.manualMinutes, name: docFileName(to, r.values, 'pdf'), vessel: docVessel(to, r.values), lastEditAt: Date.now() }, note, get().settings.reviewer) : x)) });
+        const stillEmpty = r.toFill.filter((f) => !(r.values[f.key] || '').trim()).map((f) => f.label);
+        return { ok: true, message: 'Switched to ' + to.name + ' — carried over ' + r.carried.length + ' value' + (r.carried.length === 1 ? '' : 's') + (stillEmpty.length ? ', ' + stillEmpty.length + ' left to fill' : ''), carried: r.carried.map((c) => c.to.label), toFill: stillEmpty };
+      },
+
       setDocValue: (docId, key, value) => {
         const d = get().docs.find((x) => x.id === docId);
         if (!d || d.status === 'sent') return;
@@ -285,7 +320,26 @@ export const useStore = create<State>()(
         if (status === 'sent' && d.status !== 'reviewed') return false; // no send without a human review step
         const now = Date.now();
         const by = get().settings.reviewer;
-        set({ docs: get().docs.map((x) => (x.id === docId ? snapshot({ ...x, status, reviewedAt: status === 'draft' ? null : x.reviewedAt || now, sentAt: status === 'sent' ? now : null }, status === 'reviewed' ? 'Marked reviewed' : status === 'sent' ? 'Sent' : 'Returned to draft', by) : x)) });
+        set({ docs: get().docs.map((x) => (x.id === docId ? snapshot({ ...x, status, reviewedAt: status === 'draft' ? null : x.reviewedAt || now, sentAt: status === 'sent' ? now : null, ...(status === 'sent' ? { submittedVia: 'email' as const } : {}) }, status === 'reviewed' ? 'Marked reviewed' : status === 'sent' ? 'Sent' : 'Returned to draft', by) : x)) });
+        return true;
+      },
+
+      markSubmitted: (docId, at, ref) => {
+        const d = get().docs.find((x) => x.id === docId);
+        if (!d) return { ok: false, message: 'Document not found.' };
+        if (d.status === 'sent') return { ok: false, message: 'Already submitted.' };
+        if (d.status !== 'reviewed') return { ok: false, message: 'Mark the document reviewed before recording a submission.' };
+        if (!Number.isFinite(at) || at > Date.now() + 60_000) return { ok: false, message: 'The submission date cannot be in the future.' };
+        const by = get().settings.reviewer;
+        const note = 'Submitted (recorded manually' + (ref.trim() ? ', ref ' + ref.trim() : '') + ')';
+        set({ docs: get().docs.map((x) => (x.id === docId ? snapshot({ ...x, status: 'sent', sentAt: at, submittedVia: 'manual', submittedRef: ref.trim() || undefined }, note, by) : x)) });
+        return { ok: true, message: 'Recorded as submitted on ' + new Date(at).toLocaleDateString() };
+      },
+
+      reopenDoc: (docId) => {
+        const d = get().docs.find((x) => x.id === docId);
+        if (!d || d.status !== 'sent') return false;
+        set({ docs: get().docs.map((x) => (x.id === docId ? snapshot({ ...x, status: 'reviewed', sentAt: null, submittedVia: undefined, submittedRef: undefined }, 'Submission undone', get().settings.reviewer) : x)) });
         return true;
       },
 

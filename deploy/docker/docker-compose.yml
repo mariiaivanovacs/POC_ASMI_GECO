@@ -1,0 +1,11 @@
+services:
+  asmi-poc:
+    build: { context: ./src, dockerfile: deploy/docker/Dockerfile }
+    container_name: asmi-poc
+    restart: unless-stopped
+    env_file: ./poc.env            # contains DASHSCOPE_API_KEY (chmod 600, not in git)
+    ports:
+      - "127.0.0.1:8085:4174"      # HelmDocs   (reach via SSH tunnel)
+      - "127.0.0.1:8086:4173"      # HelmLearn
+    mem_limit: 700m
+    cpus: 1.0

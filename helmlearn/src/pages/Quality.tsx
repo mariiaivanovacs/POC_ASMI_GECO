@@ -76,7 +76,7 @@ export function Quality() {
                   const approvedPct = rc.total ? Math.round((rc.approved / rc.total) * 100) : 0;
                   return (
                     <tr key={m.id} style={{ borderTop: '1px solid var(--line2)' }} data-testid="module-quality-row" data-material={m.id}>
-                      <td style={{ padding: 8 }}><b>{m.short}</b><div style={{ fontSize: 10.5, color: 'var(--muted)' }}>{m.source === 'deepseek' ? 'DeepSeek' : 'Offline engine'} · {m.pages} pages</div></td>
+                      <td style={{ padding: 8 }}><b>{m.short}</b><div style={{ fontSize: 10.5, color: 'var(--muted)' }}>{m.source === 'deepseek' ? 'Qwen' : 'Offline engine'} · {m.pages} pages</div></td>
                       <td style={{ padding: 8, whiteSpace: 'nowrap' }}>{s.total} <span style={{ color: 'var(--muted)' }}>· {s.generated} AI</span></td>
                       <td style={{ padding: 8 }}><div style={{ display: 'flex', alignItems: 'center', gap: 8 }}><div className={'bar' + (approvedPct === 100 ? ' green' : '')} style={{ flexGrow: 1 }}><i style={{ width: approvedPct + '%' }} /></div><span style={{ fontWeight: 700, minWidth: 34 }}>{approvedPct}%</span></div></td>
                       <td style={{ padding: 8 }}>{s.passRate === null ? <span style={{ color: 'var(--muted)' }}>no attempts</span> : <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}><div className="bar" style={{ flexGrow: 1 }}><i style={{ width: s.passRate + '%', background: s.passRate < 60 ? 'var(--red)' : s.passRate < 75 ? 'var(--amber)' : 'var(--green)' }} /></div><span style={{ fontWeight: 700, minWidth: 34 }}>{s.passRate}%</span></div>}</td>

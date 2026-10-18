@@ -169,7 +169,7 @@ export const useStore = create<State>()(
             } : x)),
           });
           if (r.note) get().toast(r.note, 'err');
-          get().toast(r.exercises.length + ' exercises drafted from ' + m.short + (r.source === 'deepseek' ? ' by DeepSeek' : '') + (r.missing.length ? ' · no source for: ' + r.missing.join(', ') : ''), 'ok');
+          get().toast(r.exercises.length + ' exercises drafted from ' + m.short + (r.source === 'deepseek' ? ' by Qwen' : '') + (r.missing.length ? ' · no source for: ' + r.missing.join(', ') : ''), 'ok');
           const st2 = get().settings;
           set({ audit: [...get().audit, logAuditEntry(st2.reviewerName || 'System', st2.reviewerRole, 'material_processed', 'material', id, r.exercises.length + ' exercises drafted (' + r.source + ') from ' + m.short)] });
         } catch (e) {

@@ -65,6 +65,24 @@ describe('assistant search', () => {
     expect(search(docs, 'zebra crossing').hits).toHaveLength(0);
     expect(search(docs, '').hits).toHaveLength(0);
   });
+  it('tolerates typos in vessel names', () => {
+    const r = search(docs, 'ocean pionner');
+    expect(r.hits.length).toBeGreaterThan(0);
+    expect(r.hits.every((h) => h.doc.vessel === 'MV Ocean Pioneer')).toBe(true);
+  });
+  it('"WO 2409" written with a space is the same work order as WO-2409', () => {
+    expect(tokens('WO 2409')).toEqual(['wo2409']);
+    expect(search(docs, 'WO 2409').hits.map((h) => h.doc.id)).toEqual(search(docs, 'WO-2409').hits.map((h) => h.doc.id));
+  });
+  it('"submitted in <month>" filters on the submission date', () => {
+    const sent = docs.filter((d) => d.status === 'sent' && d.sentAt);
+    if (!sent.length) return;
+    const m = new Date(sent[0].sentAt!).toLocaleDateString('en', { month: 'long' }).toLowerCase();
+    const r = search(docs, 'submitted in ' + m, 50, { now: sent[0].sentAt! });
+    expect(r.filters.join(' ')).toMatch(/submitted/);
+    expect(r.hits.length).toBeGreaterThan(0);
+    expect(r.hits.every((h) => h.doc.status === 'sent')).toBe(true);
+  });
   it('suggestions are drawn from the library', () => {
     expect(suggestions(docs)[0]).toBe('IHM declaration for MV Ocean Pioneer');
     expect(suggestions([])).toHaveLength(0);

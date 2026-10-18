@@ -1,7 +1,7 @@
 import { useMemo, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import type { Doc } from '../data/types';
-import { computeReminders, countdownText, diffValues, groupByMonth, laterThan, statusWord, type Reminder } from '../engine/reminders';
+import { calendarEntries, computeReminders, countdownText, diffValues, groupByMonth, laterThan, monthGrid, startOfDay, statusWord, type CalEntry, type CalState, type Reminder } from '../engine/reminders';
 import { useStore } from '../store/useStore';
 import { Ic, regimeColor } from './ui/Icons';
 
@@ -20,6 +20,8 @@ export function RemindersPanel() {
   const templates = useStore((s) => s.templates);
   const rules = useStore((s) => s.settings.deadlines);
   const [range, setRange] = useState<'3m' | 'all'>('3m');
+  const [view, setView] = useState<'list' | 'calendar'>('calendar');
+  const [submitFor, setSubmitFor] = useState<Doc | null>(null);
   const [versionsFor, setVersionsFor] = useState<Doc | null>(null);
   const now = Date.now();
   const reminders = useMemo(() => computeReminders(docs, templates, rules, now), [docs, templates, rules, now]);
@@ -32,13 +34,20 @@ export function RemindersPanel() {
     <div style={{ display: 'flex', flexDirection: 'column', minHeight: 0, flexGrow: 1 }} data-testid="reminders" data-due-soon={dueSoon}>
       <div style={{ marginTop: 14, paddingTop: 12, borderTop: '1px solid var(--line)', display: 'flex', alignItems: 'center', justifyContent: 'space-between', gap: 8 }}>
         <div><div style={{ fontSize: 13, fontWeight: 700 }}>Compliance reminders</div><div style={{ fontSize: 10.5, color: 'var(--muted)' }}>Due date · document · urgency · what is missing · hours left</div></div>
-        <div className="seg" style={{ padding: 2 }} data-testid="reminders-range">
-          <button className={range === '3m' ? 'on' : ''} style={{ height: 26, padding: '0 9px', fontSize: 11 }} onClick={() => setRange('3m')}>Next 3 months</button>
-          <button className={range === 'all' ? 'on' : ''} style={{ height: 26, padding: '0 9px', fontSize: 11 }} onClick={() => setRange('all')}>All</button>
+        <div className="seg" style={{ padding: 2 }} data-testid="reminders-view">
+          <button className={view === 'calendar' ? 'on' : ''} style={{ height: 26, padding: '0 9px', fontSize: 11 }} onClick={() => setView('calendar')} data-testid="view-calendar">Calendar</button>
+          <button className={view === 'list' ? 'on' : ''} style={{ height: 26, padding: '0 9px', fontSize: 11 }} onClick={() => setView('list')} data-testid="view-list">List</button>
         </div>
       </div>
+      {view === 'list' && (
+        <div className="seg" style={{ padding: 2, marginTop: 8, alignSelf: 'flex-start' }} data-testid="reminders-range">
+          <button className={range === '3m' ? 'on' : ''} style={{ height: 24, padding: '0 9px', fontSize: 11 }} onClick={() => setRange('3m')}>Next 3 months</button>
+          <button className={range === 'all' ? 'on' : ''} style={{ height: 24, padding: '0 9px', fontSize: 11 }} onClick={() => setRange('all')}>All</button>
+        </div>
+      )}
+      {view === 'calendar' && <ComplianceCalendar onOpen={(id) => nav('/assemble/' + id)} onSubmit={setSubmitFor} />}
 
-      <div style={{ marginTop: 10, display: 'flex', flexDirection: 'column', gap: 10, overflow: 'auto', minHeight: 0, flexGrow: 1 }} data-testid="reminder-months">
+      {view === 'list' && <div style={{ marginTop: 10, display: 'flex', flexDirection: 'column', gap: 10, overflow: 'auto', minHeight: 0, flexGrow: 1 }} data-testid="reminder-months">
         {shown.map((g) => (
           <div key={g.key} data-testid="reminder-month" data-month={g.key}>
             <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '6px 2px', position: 'sticky', top: 0, background: 'var(--card)', zIndex: 1 }}>
@@ -47,19 +56,20 @@ export function RemindersPanel() {
             </div>
             {g.items.length === 0 && <div style={{ fontSize: 11.5, color: 'var(--muted)', padding: '4px 2px 6px' }} data-testid="month-empty">Nothing due — every {g.label.split(' ')[0]} document is sent.</div>}
             <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
-              {g.items.map((r) => <ReminderCard key={r.doc.id} r={r} onOpen={() => nav('/assemble/' + r.doc.id)} onVersions={() => setVersionsFor(r.doc)} />)}
+              {g.items.map((r) => <ReminderCard key={r.doc.id} r={r} onOpen={() => nav('/assemble/' + r.doc.id)} onVersions={() => setVersionsFor(r.doc)} onSubmit={() => setSubmitFor(r.doc)} />)}
             </div>
           </div>
         ))}
         {range === '3m' && later.length > 0 && <div style={{ fontSize: 11.5, color: 'var(--muted)', padding: '2px 2px 6px' }} data-testid="reminder-later">+{later.length} more after {groups[groups.length - 1].label} — switch to <b>All</b>.</div>}
         {reminders.length === 0 && <div className="empty" style={{ padding: 20 }} data-testid="reminders-empty"><Ic.check size={18} stroke="var(--green-t)" /><div style={{ fontSize: 12.5 }}>Nothing outstanding — every document is sent.</div></div>}
-      </div>
+      </div>}
+      {submitFor && <SubmitModal docId={submitFor.id} onClose={() => setSubmitFor(null)} />}
       {versionsFor && <VersionsModal docId={versionsFor.id} onClose={() => setVersionsFor(null)} />}
     </div>
   );
 }
 
-function ReminderCard({ r, onOpen, onVersions }: { r: Reminder; onOpen: () => void; onVersions: () => void }) {
+function ReminderCard({ r, onOpen, onVersions, onSubmit }: { r: Reminder; onOpen: () => void; onVersions: () => void; onSubmit: () => void }) {
   const u = URG[r.urgency];
   const d = new Date(r.due);
   return (
@@ -87,6 +97,7 @@ function ReminderCard({ r, onOpen, onVersions }: { r: Reminder; onOpen: () => vo
           </div>
           <div style={{ display: 'flex', alignItems: 'center', gap: 6, flexShrink: 0 }}>
             <span style={{ fontSize: 10.5, color: 'var(--blue-d)', whiteSpace: 'nowrap' }} title="Estimated time to finish, review and send" data-testid="reminder-hours">≈ {r.hoursLeft} h</span>
+            {r.doc.status === 'reviewed' && <button className="btn sm" style={{ height: 24, padding: '0 9px', fontSize: 11 }} onClick={onSubmit} data-testid="reminder-submit">Mark submitted</button>}
             <button className="btn sm primary" style={{ height: 24, padding: '0 9px', fontSize: 11 }} onClick={onOpen} data-testid="reminder-open">Open</button>
             <button className="btn sm" style={{ height: 24, padding: '0 8px', fontSize: 11 }} onClick={onVersions} title="View previous versions" data-testid="reminder-versions">v{r.doc.versions.length} ▾</button>
           </div>
@@ -141,6 +152,126 @@ export function VersionsModal({ docId, onClose }: { docId: string; onClose: () =
         </div>
         <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8, marginTop: 12 }}>
           <button className="btn sm primary" onClick={() => { onClose(); nav('/assemble/' + doc.id); }} data-testid="versions-open">Open document</button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+const CAL_COLOR: Record<CalState, string> = { overdue: '#ff7a78', today: '#f5d27a', soon: '#f5d27a', later: '#7ab8ff', ontime: '#5fd99a', late: '#f0a35e' };
+const CAL_WORD: Record<CalState, string> = { overdue: 'Overdue', today: 'Due today', soon: 'Due this week', later: 'Upcoming', ontime: 'Submitted on time', late: 'Submitted late' };
+const WEEKDAYS = ['Mo', 'Tu', 'We', 'Th', 'Fr', 'Sa', 'Su'];
+
+/** Month calendar of due dates: outstanding documents by urgency, submitted ones as on time / late. Click a day to act on it. */
+function ComplianceCalendar({ onOpen, onSubmit }: { onOpen: (docId: string) => void; onSubmit: (d: Doc) => void }) {
+  const docs = useStore((s) => s.docs);
+  const rules = useStore((s) => s.settings.deadlines);
+  const reopen = useStore((s) => s.reopenDoc);
+  const toast = useStore((s) => s.toast);
+  const today = startOfDay(Date.now());
+  const [month, setMonth] = useState(today);
+  const [day, setDay] = useState<number>(today);
+  const entries = useMemo(() => calendarEntries(docs, rules), [docs, rules]);
+  const byDay = useMemo(() => { const m = new Map<number, CalEntry[]>(); for (const e of entries) m.set(e.due, [...(m.get(e.due) || []), e]); return m; }, [entries]);
+  const grid = monthGrid(month);
+  const cur = new Date(month);
+  const shift = (n: number) => { const d = new Date(cur.getFullYear(), cur.getMonth() + n, 1).getTime(); setMonth(d); };
+  const inMonth = entries.filter((e) => new Date(e.due).getMonth() === cur.getMonth() && new Date(e.due).getFullYear() === cur.getFullYear());
+  const overdueAll = entries.filter((e) => e.state === 'overdue').length;
+  const selected = byDay.get(day) || [];
+  return (
+    <div style={{ marginTop: 10, display: 'flex', flexDirection: 'column', gap: 8, minHeight: 0, overflow: 'auto' }} data-testid="calendar">
+      <div className="row-between">
+        <button className="ib" style={{ width: 28, height: 28, borderRadius: 8 }} onClick={() => shift(-1)} aria-label="Previous month" data-testid="cal-prev">‹</button>
+        <div style={{ textAlign: 'center' }}>
+          <div style={{ fontFamily: 'var(--font-h)', fontSize: 13.5, fontWeight: 700 }} data-testid="cal-month">{monthLabel(cur)}</div>
+          <div style={{ fontSize: 10.5, color: 'var(--muted)' }} data-testid="cal-summary">{inMonth.length} due · {inMonth.filter((e) => e.submittedAt).length} submitted{overdueAll ? ' · ' : ''}{overdueAll ? <b style={{ color: CAL_COLOR.overdue }}>{overdueAll} overdue</b> : null}</div>
+        </div>
+        <div style={{ display: 'flex', gap: 4 }}>
+          <button className="btn sm" style={{ height: 28, padding: '0 8px', fontSize: 11 }} onClick={() => { setMonth(today); setDay(today); }} data-testid="cal-today">Today</button>
+          <button className="ib" style={{ width: 28, height: 28, borderRadius: 8 }} onClick={() => shift(1)} aria-label="Next month" data-testid="cal-next">›</button>
+        </div>
+      </div>
+      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(7, 1fr)', gap: 3 }}>
+        {WEEKDAYS.map((w) => <div key={w} style={{ fontSize: 10, color: 'var(--muted)', textAlign: 'center', fontWeight: 700 }}>{w}</div>)}
+        {grid.map((t) => {
+          const items = byDay.get(t) || [];
+          const other = new Date(t).getMonth() !== cur.getMonth();
+          const isToday = t === today, isSel = t === day;
+          return (
+            <button key={t} onClick={() => setDay(t)} data-testid="cal-day" data-day={isoDay(t)} data-count={items.length}
+              style={{ minHeight: 40, padding: '3px 2px', borderRadius: 8, border: '1px solid ' + (isSel ? 'var(--blue)' : isToday ? 'var(--blue-t)' : 'var(--line)'), background: isSel ? 'rgba(59,130,246,.14)' : 'var(--card2)', opacity: other ? 0.4 : 1, display: 'flex', flexDirection: 'column', alignItems: 'center', gap: 3, cursor: 'pointer' }}>
+              <span style={{ fontSize: 11, fontWeight: isToday ? 800 : 600, color: isToday ? 'var(--blue-d)' : 'var(--ink)' }}>{new Date(t).getDate()}</span>
+              <span style={{ display: 'flex', gap: 2, flexWrap: 'wrap', justifyContent: 'center' }}>
+                {items.slice(0, 4).map((e) => <i key={e.doc.id} title={e.doc.name + ' — ' + CAL_WORD[e.state]} style={{ width: 6, height: 6, borderRadius: 999, background: CAL_COLOR[e.state] }} />)}
+                {items.length > 4 && <span style={{ fontSize: 8, color: 'var(--muted)' }}>+{items.length - 4}</span>}
+              </span>
+            </button>
+          );
+        })}
+      </div>
+      <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, fontSize: 10, color: 'var(--ink2)' }}>
+        {(['overdue', 'soon', 'later', 'ontime', 'late'] as CalState[]).map((k) => <span key={k} style={{ display: 'inline-flex', alignItems: 'center', gap: 4 }}><i style={{ width: 7, height: 7, borderRadius: 999, background: CAL_COLOR[k] }} />{CAL_WORD[k]}</span>)}
+      </div>
+      <div style={{ borderTop: '1px solid var(--line)', paddingTop: 8 }} data-testid="cal-day-list">
+        <div style={{ fontSize: 12, fontWeight: 700, marginBottom: 6 }}>{new Date(day).toLocaleDateString(undefined, { weekday: 'long', day: 'numeric', month: 'long' })}{day === today ? ' · today' : ''}</div>
+        {selected.length === 0 && <div style={{ fontSize: 11.5, color: 'var(--muted)' }} data-testid="cal-day-empty">Nothing due on this day.</div>}
+        <div className="stack" style={{ gap: 6 }}>
+          {selected.map((e) => (
+            <div key={e.doc.id} className="res" style={{ flexDirection: 'column', alignItems: 'stretch', gap: 5, cursor: 'default' }} data-testid="cal-entry" data-state={e.state} data-doc={e.doc.id}>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                <i style={{ width: 8, height: 8, borderRadius: 999, background: CAL_COLOR[e.state], flexShrink: 0 }} />
+                <span style={{ fontSize: 11, fontWeight: 700, color: CAL_COLOR[e.state] }} data-testid="cal-entry-state">{CAL_WORD[e.state]}{e.state === 'overdue' ? ' · ' + e.daysLate + ' day' + (e.daysLate === 1 ? '' : 's') : e.state === 'late' ? ' · ' + e.daysLate + ' day' + (e.daysLate === 1 ? '' : 's') + ' after due' : ''}</span>
+                <span style={{ marginLeft: 'auto', fontSize: 10.5, color: 'var(--muted)' }}>{statusWord(e.doc.status)}</span>
+              </div>
+              <div style={{ fontFamily: 'var(--font-m)', fontSize: 11, wordBreak: 'break-all' }}>{e.doc.name}</div>
+              <div style={{ fontSize: 10.5, color: 'var(--ink2)' }}><span style={{ color: regimeColor(e.doc.regimeShort) }}>{e.doc.templateName}</span> · {e.rule.text}</div>
+              {e.submittedAt && <div style={{ fontSize: 10.5, color: 'var(--ink2)' }} data-testid="cal-entry-submitted">Submitted {new Date(e.submittedAt).toLocaleDateString()} {e.doc.submittedVia === 'manual' ? '(recorded manually' + (e.doc.submittedRef ? ', ref ' + e.doc.submittedRef : '') + ')' : '(by email)'}</div>}
+              <div style={{ display: 'flex', gap: 6, justifyContent: 'flex-end' }}>
+                {e.doc.status === 'draft' && <span style={{ fontSize: 10.5, color: 'var(--muted)', alignSelf: 'center' }}>review it before submitting</span>}
+                {e.doc.status === 'reviewed' && <button className="btn sm" style={{ height: 24, padding: '0 9px', fontSize: 11 }} onClick={() => onSubmit(e.doc)} data-testid="cal-submit">Mark submitted</button>}
+                {e.doc.status === 'sent' && e.doc.submittedVia === 'manual' && <button className="btn sm" style={{ height: 24, padding: '0 9px', fontSize: 11 }} onClick={() => { if (window.confirm('Undo the recorded submission of ' + e.doc.name + '? It goes back to Reviewed and counts as outstanding again.')) { reopen(e.doc.id); toast('Submission undone — back to Reviewed', 'ok'); } }} data-testid="cal-undo">Undo</button>}
+                <button className="btn sm primary" style={{ height: 24, padding: '0 9px', fontSize: 11 }} onClick={() => onOpen(e.doc.id)} data-testid="cal-open">Open</button>
+              </div>
+            </div>
+          ))}
+        </div>
+      </div>
+    </div>
+  );
+}
+function monthLabel(d: Date): string { return d.toLocaleDateString(undefined, { month: 'long', year: 'numeric' }); }
+
+const isoDay = (t: number) => { const d = new Date(t); return d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0'); };
+
+/** Record a submission that happened outside the app (portal upload, courier, in person): date + optional receipt reference. */
+export function SubmitModal({ docId, onClose }: { docId: string; onClose: () => void }) {
+  const doc = useStore((s) => s.docs.find((d) => d.id === docId));
+  const markSubmitted = useStore((s) => s.markSubmitted);
+  const toast = useStore((s) => s.toast);
+  const [date, setDate] = useState(isoDay(Date.now()));
+  const [ref, setRef] = useState('');
+  if (!doc) return null;
+  const save = () => {
+    const [y, m, d] = date.split('-').map(Number);
+    const at = y ? new Date(y, m - 1, d, 12).getTime() : NaN;
+    const r = markSubmitted(doc.id, Math.min(at, Date.now()), ref);
+    toast(r.message, r.ok ? 'ok' : 'err');
+    if (r.ok) onClose();
+  };
+  return (
+    <div className="modal-bg" onClick={onClose}>
+      <div className="modal" style={{ width: 420 }} onClick={(e) => e.stopPropagation()} role="dialog" aria-label="Mark submitted" data-testid="submit-modal">
+        <div className="row-between"><h2 style={{ fontSize: 15 }}>Mark as submitted</h2><button className="ib" style={{ width: 32, height: 32 }} onClick={onClose} aria-label="Close"><Ic.x /></button></div>
+        <div style={{ fontSize: 11.5, color: 'var(--ink2)', marginTop: 4, wordBreak: 'break-all' }}>{doc.name}</div>
+        <label className="lbl" htmlFor="sub-date" style={{ marginTop: 12 }}>Submitted on</label>
+        <input id="sub-date" className="input" type="date" value={date} max={isoDay(Date.now())} onChange={(e) => setDate(e.target.value)} data-testid="submit-date" />
+        <label className="lbl" htmlFor="sub-ref" style={{ marginTop: 10 }}>Receipt / portal reference (optional)</label>
+        <input id="sub-ref" className="input" placeholder="e.g. MOM iReport 2026-118842" value={ref} onChange={(e) => setRef(e.target.value)} data-testid="submit-ref" />
+        <div style={{ fontSize: 11, color: 'var(--muted)', marginTop: 8, lineHeight: 1.45 }}>Use this when the document went out by portal, courier or in person. It locks the document and the calendar shows it as submitted on time or late against its deadline.</div>
+        <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8, marginTop: 14 }}>
+          <button className="btn sm" onClick={onClose}>Cancel</button>
+          <button className="btn sm primary" onClick={save} disabled={!date} data-testid="submit-save">Mark submitted</button>
         </div>
       </div>
     </div>

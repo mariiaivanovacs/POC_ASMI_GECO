@@ -1,10 +1,10 @@
 import type { ExType, Exercise, Lang, Payload, Structure, Widgets } from '../data/types';
 import { ALL_TYPES } from './generate';
 
-// DeepSeek is OpenAI-compatible. In dev the Vite proxy forwards /api/deepseek -> https://api.deepseek.com
-// (see vite.config.ts) so the browser never hits a cross-origin API; in production put the same proxy in front.
-export const DEEPSEEK_BASE = '/api/deepseek';
-export const DEEPSEEK_MODEL = 'deepseek-chat';
+// Qwen (DashScope) is OpenAI-compatible. The server-side relay in vite.config.ts forwards /api/qwen/chat/completions and
+// injects DASHSCOPE_API_KEY, so no key is ever held by the browser. (Identifiers keep the old 'Qwen' names to avoid churn.)
+export const DEEPSEEK_BASE = '/api/qwen';
+export const DEEPSEEK_MODEL = 'qwen-plus';
 const MAX_DOC_CHARS = 14_000;
 
 export class LLMError extends Error {}
@@ -56,30 +56,29 @@ Rules:
   return { system, user };
 }
 
-export async function callDeepSeek(apiKey: string, system: string, user: string, signal?: AbortSignal): Promise<string> {
+export async function callQwen(_apiKey: string, system: string, user: string, signal?: AbortSignal, maxTokens = 6000): Promise<string> {
   const res = await fetch(DEEPSEEK_BASE + '/chat/completions', {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + apiKey },
-    body: JSON.stringify({ model: DEEPSEEK_MODEL, temperature: 0.4, max_tokens: 6000, response_format: { type: 'json_object' }, messages: [{ role: 'system', content: system }, { role: 'user', content: user }] }),
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ model: DEEPSEEK_MODEL, temperature: 0.4, max_tokens: maxTokens, response_format: { type: 'json_object' }, messages: [{ role: 'system', content: system }, { role: 'user', content: user }] }),
     signal,
-  }).catch((e) => { throw new LLMError('Could not reach DeepSeek (' + (e instanceof Error ? e.message : 'network error') + '). Is the dev proxy running?'); });
-  if (res.status === 401) throw new LLMError('DeepSeek rejected the API key (401). Check Settings → API key.');
-  if (res.status === 402) throw new LLMError('DeepSeek account has no balance (402).');
-  if (res.status === 429) throw new LLMError('DeepSeek rate limit hit (429). Try again in a moment.');
-  if (!res.ok) throw new LLMError('DeepSeek returned HTTP ' + res.status + '.');
-  const json = await res.json().catch(() => { throw new LLMError('DeepSeek returned a non-JSON body.'); });
+  }).catch((e) => { throw new LLMError('Could not reach Qwen (' + (e instanceof Error ? e.message : 'network error') + '). Is the server relay running?'); });
+  if (res.status === 401) throw new LLMError('Qwen rejected the API key (401). Check DASHSCOPE_API_KEY on the server.');
+  if (res.status === 402) throw new LLMError('Qwen account has no balance (402).');
+  if (res.status === 429) throw new LLMError('Qwen rate limit hit (429). Try again in a moment.');
+  if (!res.ok) throw new LLMError('Qwen returned HTTP ' + res.status + '.');
+  const json = await res.json().catch(() => { throw new LLMError('Qwen returned a non-JSON body.'); });
   const content = json?.choices?.[0]?.message?.content;
-  if (typeof content !== 'string' || !content.trim()) throw new LLMError('DeepSeek returned an empty completion.');
+  if (typeof content !== 'string' || !content.trim()) throw new LLMError('Qwen returned an empty completion.');
   return content;
 }
 
-export async function testDeepSeek(apiKey: string): Promise<string> {
-  const res = await fetch(DEEPSEEK_BASE + '/models', { headers: { Authorization: 'Bearer ' + apiKey } }).catch(() => { throw new LLMError('Could not reach DeepSeek. Is the dev proxy running?'); });
+export async function testQwen(_apiKey = ''): Promise<string> {
+  const res = await fetch(DEEPSEEK_BASE + '/chat/completions', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ model: DEEPSEEK_MODEL, max_tokens: 5, messages: [{ role: 'user', content: 'Reply with: ok' }] }) }).catch(() => { throw new LLMError('Could not reach the server relay.'); });
+  if (res.status === 503) throw new LLMError('Server has no DASHSCOPE_API_KEY configured.');
   if (res.status === 401) throw new LLMError('Key rejected (401).');
   if (!res.ok) throw new LLMError('HTTP ' + res.status);
-  const j = await res.json().catch(() => ({}));
-  const n = Array.isArray(j?.data) ? j.data.length : 0;
-  return 'Connected — ' + n + ' model' + (n === 1 ? '' : 's') + ' available';
+  return 'Connected — Qwen (' + DEEPSEEK_MODEL + ') is answering through the server relay';
 }
 
 // ---- parsing / validation --------------------------------------------------------------------
@@ -116,7 +115,7 @@ export function parseLLMResponse(content: string, materialId: string, fallbackWi
   try {
     const cleaned = content.trim().replace(/^```(?:json)?\s*/i, '').replace(/```\s*$/, '');
     root = JSON.parse(cleaned);
-  } catch { throw new LLMError('DeepSeek answered with invalid JSON.'); }
+  } catch { throw new LLMError('Qwen answered with invalid JSON.'); }
   const rawEx = Array.isArray(root.exercises) ? (root.exercises as Raw[]) : [];
   const exercises: Exercise[] = [];
   const langsSeen = new Set<Lang>(['en']);
@@ -132,9 +131,9 @@ export function parseLLMResponse(content: string, materialId: string, fallbackWi
     }
     const step = Number.isInteger(r.step) && (r.step as number) >= 1 ? (r.step as number) - 1 : null;
     const level = r.level === 'new' || r.level === 'exp' ? r.level : 'all';
-    exercises.push({ id: materialId + '_ai_' + type + '_' + i, materialId, type, level, title: isStr(r.title) ? r.title : (type + ' task'), sourceRef: 'DeepSeek · ' + (step !== null ? 'step ' + (step + 1) : 'document'), stepIndex: step, i18n, generated: true, reviewStatus: 'draft', reviewedBy: null, reviewedAt: null, reviewNote: null });
+    exercises.push({ id: materialId + '_ai_' + type + '_' + i, materialId, type, level, title: isStr(r.title) ? r.title : (type + ' task'), sourceRef: 'Qwen · ' + (step !== null ? 'step ' + (step + 1) : 'document'), stepIndex: step, i18n, generated: true, reviewStatus: 'draft', reviewedBy: null, reviewedAt: null, reviewNote: null });
   });
-  if (!exercises.length) throw new LLMError('DeepSeek returned no usable exercises.');
+  if (!exercises.length) throw new LLMError('Qwen returned no usable exercises.');
 
   const w = (root.widgets && typeof root.widgets === 'object' ? root.widgets : {}) as Raw;
   const fill = (w.fill && typeof w.fill === 'object' ? w.fill : {}) as Raw;
@@ -155,8 +154,43 @@ export function parseLLMResponse(content: string, materialId: string, fallbackWi
   return { exercises, widgets, langs: Array.from(langsSeen), missing };
 }
 
-export async function generateWithDeepSeek(apiKey: string, text: string, structure: Structure, materialId: string, translate: boolean, fallbackWidgets: Widgets): Promise<LLMResult> {
-  const { system, user } = buildPrompt(text, structure, translate);
-  const content = await callDeepSeek(apiKey, system, user);
-  return parseLLMResponse(content, materialId, fallbackWidgets);
+const LANG_NAME: Record<'bm' | 'zh', string> = { bm: 'Bahasa Melayu', zh: 'Simplified Chinese' };
+
+// Translating is a separate, parallel pass: the English draft returns in ~20-30 s and a slow or failed translation
+// degrades to "English only" instead of throwing the whole draft away.
+async function translateInto(lang: 'bm' | 'zh', exercises: Exercise[], signal?: AbortSignal): Promise<Map<string, Payload>> {
+  const items = exercises.map((e) => ({ id: e.id, type: e.type, data: e.i18n.en.data }));
+  const system = 'You are a professional marine-industry translator. Translate training task text faithfully. Keep numbers, units, codes and proper names unchanged. Answer with a single JSON object and nothing else.';
+  const user = `Translate every human-readable string value in these training tasks into ${LANG_NAME[lang]}. Keep the JSON structure, keys, array order, the number of options/items, and every numeric index (e.g. "correct") EXACTLY the same. Do not translate keys.\n\nReturn {"items":[{"id":"...","data":{...translated...}}]}.\n\nINPUT:\n${JSON.stringify({ items })}`;
+  const out = new Map<string, Payload>();
+  try {
+    const content = await callQwen('', system, user, signal, 4000);
+    const root = JSON.parse(content.trim().replace(/^```(?:json)?\s*/i, '').replace(/```\s*$/, '')) as Raw;
+    const arr = Array.isArray(root.items) ? (root.items as Raw[]) : [];
+    for (const it of arr) {
+      const src = exercises.find((e) => e.id === it.id);
+      if (!src) continue;
+      const p = payload(src.type, it.data);
+      const en = src.i18n.en.data as unknown as Raw;
+      const sameIdx = !('correct' in en) || (p && (p.data as unknown as Raw).correct === en.correct);
+      if (p && sameIdx) out.set(src.id, p);
+    }
+  } catch { /* translation is best-effort */ }
+  return out;
+}
+
+export async function generateWithQwen(apiKey: string, text: string, structure: Structure, materialId: string, translate: boolean, fallbackWidgets: Widgets): Promise<LLMResult> {
+  const { system, user } = buildPrompt(text, structure, false);
+  const content = await callQwen(apiKey, system, user, undefined, 3500);
+  const r = parseLLMResponse(content, materialId, fallbackWidgets);
+  if (!translate) return r;
+  const [bm, zh] = await Promise.all([translateInto('bm', r.exercises), translateInto('zh', r.exercises)]);
+  for (const e of r.exercises) {
+    const b = bm.get(e.id); if (b) e.i18n.bm = b;
+    const z = zh.get(e.id); if (z) e.i18n.zh = z;
+  }
+  const langs: Lang[] = ['en'];
+  if (bm.size) langs.push('bm');
+  if (zh.size) langs.push('zh');
+  return { ...r, langs };
 }

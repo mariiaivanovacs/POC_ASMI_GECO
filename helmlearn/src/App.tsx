@@ -4,7 +4,7 @@ import { useStore } from './store/useStore';
 import { Ic } from './components/ui/Icons';
 import { AdminAvatar } from './components/ui/Avatar';
 import { Toasts } from './components/ui/Toasts';
-import { testDeepSeek } from './engine/llm';
+import { testQwen } from './engine/llm';
 import { Materials } from './pages/Materials';
 import { TaskBuilder } from './pages/TaskBuilder';
 import { Learners } from './pages/Learners';
@@ -50,21 +50,18 @@ function SettingsModal({ onClose }: { onClose: () => void }) {
   const settings = useStore((s) => s.settings);
   const setPin = useStore((s) => s.setPin);
   const setProvider = useStore((s) => s.setProvider);
-  const setApiKey = useStore((s) => s.setApiKey);
   const setTranslate = useStore((s) => s.setTranslate);
   const setReviewer = useStore((s) => s.setReviewer);
   const resetDemo = useStore((s) => s.resetDemo);
   const toast = useStore((s) => s.toast);
   const storageOk = useStore((s) => s.storageOk);
   const [pin, setP] = useState(settings.pin);
-  const [key, setKey] = useState(settings.apiKey);
   const [reviewerName, setReviewerName] = useState(settings.reviewerName);
   const [reviewerRole, setReviewerRole] = useState(settings.reviewerRole);
   const [testing, setTesting] = useState<string | null>(null);
-  const saveKey = () => { setApiKey(key); toast(key.trim() ? 'API key saved in this browser' : 'API key cleared', 'ok'); };
   const test = async () => {
     setTesting('Testing…');
-    try { setTesting(await testDeepSeek(key.trim())); setApiKey(key); }
+    try { setTesting(await testQwen()); }
     catch (e) { setTesting(e instanceof Error ? e.message : 'Failed'); }
   };
   return (
@@ -76,27 +73,22 @@ function SettingsModal({ onClose }: { onClose: () => void }) {
           <div style={{ fontSize: 12, fontWeight: 600, color: 'var(--ink2)' }}>Exercise generation</div>
           <div className="seg" style={{ marginTop: 6 }} data-testid="provider-toggle">
             <button className={settings.provider === 'local' ? 'on' : ''} onClick={() => setProvider('local')}>Offline engine</button>
-            <button className={settings.provider === 'deepseek' ? 'on' : ''} onClick={() => setProvider('deepseek')}>DeepSeek AI</button>
+            <button className={settings.provider === 'deepseek' ? 'on' : ''} onClick={() => setProvider('deepseek')}>Qwen AI</button>
           </div>
           <div style={{ fontSize: 11.5, color: 'var(--ink2)', marginTop: 6, lineHeight: 1.45 }}>
             {settings.provider === 'local'
               ? 'Rule-based, runs in the browser, English only. No key, no network.'
-              : 'DeepSeek drafts all seven task types plus the widgets from the document' + (settings.translate ? ', in English, Bahasa Melayu and 中文.' : '.') + ' Falls back to the offline engine if the call fails.'}
+              : 'Qwen drafts all seven task types plus the widgets from the document' + (settings.translate ? ', in English, Bahasa Melayu and 中文.' : '.') + ' Falls back to the offline engine if the call fails.'}
           </div>
           {settings.provider === 'deepseek' && (
             <div style={{ marginTop: 10 }}>
-              <label htmlFor="apikey" style={{ fontSize: 12, fontWeight: 600, color: 'var(--ink2)' }}>DeepSeek API key</label>
-              <div style={{ display: 'flex', gap: 8, marginTop: 6 }}>
-                <input id="apikey" className="input" type="password" placeholder="sk-…" value={key} onChange={(e) => setKey(e.target.value)} data-testid="api-key" autoComplete="off" />
-                <button className="btn" onClick={saveKey} data-testid="save-key">Save</button>
-                <button className="btn ai" onClick={test} disabled={!key.trim()} data-testid="test-key">Test</button>
-              </div>
+              <button className="btn ai" onClick={test} data-testid="test-key">Test connection</button>
               {testing && <div className={'fb ' + (testing.startsWith('Connected') ? 'ok' : testing === 'Testing…' ? 'ok' : 'no')} style={{ marginTop: 8 }} data-testid="test-result">{testing}</div>}
               <label style={{ display: 'flex', alignItems: 'center', gap: 8, marginTop: 10, fontSize: 12.5 }}>
                 <input type="checkbox" checked={settings.translate} onChange={(e) => setTranslate(e.target.checked)} data-testid="translate-toggle" />
                 Also generate Bahasa Melayu and 中文 versions
               </label>
-              <div style={{ fontSize: 11, color: 'var(--muted)', marginTop: 6, lineHeight: 1.45 }}>The key is stored only in this browser and sent through the local proxy (<span className="kbd">/api/deepseek</span> → api.deepseek.com).</div>
+              <div style={{ fontSize: 11, color: 'var(--muted)', marginTop: 6, lineHeight: 1.45 }}>The API key is held on the server (DASHSCOPE_API_KEY) and never sent to this browser; calls go through <span className="kbd">/api/qwen</span>.</div>
             </div>
           )}
         </div>
