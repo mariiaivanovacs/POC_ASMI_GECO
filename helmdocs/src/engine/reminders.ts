@@ -1,6 +1,7 @@
 import type { DeadlineRule, Doc, DocStatus, Template } from '../data/types';
 import { missingMandatory } from './assemble';
 import { verifySeal } from './signature';
+import { parseAnyDate } from './fields';
 
 const DAY = 86_400_000;
 
@@ -23,14 +24,7 @@ export interface Reminder {
   missing: string[]; ready: boolean; hoursLeft: number; monthKey: string;
 }
 
-const MON = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
-export function parseDate(v: string): number | null {
-  const m = v.trim().match(/^(\d{1,2})\s+([A-Za-z]{3})[a-z]*\.?\s+(\d{4})$/);
-  if (m) { const mi = MON.findIndex((x) => x.toLowerCase() === m[2].toLowerCase()); if (mi >= 0) return new Date(parseInt(m[3]), mi, parseInt(m[1])).getTime(); }
-  const iso = v.trim().match(/^(\d{4})-(\d{2})-(\d{2})$/);
-  if (iso) return new Date(parseInt(iso[1]), parseInt(iso[2]) - 1, parseInt(iso[3])).getTime();
-  return null;
-}
+export function parseDate(v: string): number | null { return parseAnyDate(v); }
 export const startOfDay = (t: number) => { const d = new Date(t); d.setHours(0, 0, 0, 0); return d.getTime(); };
 const endOfMonth = (t: number) => { const d = new Date(t); return new Date(d.getFullYear(), d.getMonth() + 1, 0).getTime(); };
 const endOfQuarter = (t: number) => { const d = new Date(t); const q = Math.floor(d.getMonth() / 3); return new Date(d.getFullYear(), q * 3 + 3, 0).getTime(); };

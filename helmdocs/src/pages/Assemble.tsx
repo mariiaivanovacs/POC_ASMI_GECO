@@ -4,7 +4,7 @@ import type { AggFn, Attachment, Binding, Doc, Field, Section, Template } from '
 import { COMPANY } from '../data/seed';
 import { assemble, evaluateRule, missingMandatory, precheck, ruleText, signatoryOk } from '../engine/assemble';
 import { buildDocx, buildHtml, buildPdf, mailtoUrl, saveBlob } from '../engine/export';
-import { imoValid, lineKeys } from '../engine/fields';
+import { dateStyle, formatDate, imoValid, lineKeys, parseAnyDate } from '../engine/fields';
 import { aiAvailable, draftField, reviewDocument, type Finding } from '../engine/llm';
 import { AGG_FNS, AGG_LABEL, aggregate, numericColumns } from '../engine/data';
 import { shortHash, verifySeal } from '../engine/signature';
@@ -15,7 +15,7 @@ import { FilledPreview } from '../components/FilledPreview';
 import { buildFilledPdf } from '../engine/fillPdf';
 import { buildFilledDocx } from '../engine/fillDocx';
 import { getOriginal } from '../engine/originals';
-import { fieldByKey, sectionLabel } from '../engine/template';
+import { fieldByKey, sectionLabel, signatureFields } from '../engine/template';
 import { useStore } from '../store/useStore';
 import { Topbar } from '../App';
 import { Ic } from '../components/ui/Icons';
@@ -68,7 +68,7 @@ export function Assemble() {
   const sealState = doc ? verifySeal(template, doc) : 'none';
   const seal: PaperSeal | null = doc?.signature && sealState !== 'none' ? { png: doc.signature.png, signer: doc.signature.signer, signedAt: doc.signature.signedAt, hash: doc.signature.hash, state: sealState } : null;
   const hasSignatureBlock = !!template && template.sections.some((x) => x.signature);
-  const sigFieldValue = template && doc ? (template.fields.find((f) => f.role === 'signatory' && template.sections.some((x) => x.signature && x.lines.some((l) => l.kind === 'pair' && l.key === f.key)))?.key || '') : '';
+  const sigFieldValue = template && doc ? (signatureFields(template.fields, template.sections).find((b) => b.signatory)?.signatory?.key || '') : '';
   const signerName = sigFieldValue ? (doc?.values[sigFieldValue] || '') : '';
   // the seal joins the pre-submission checks once a document is signed
   const allChecks = useMemo(() => (!doc?.signature ? checks : [...checks, { id: 'seal', label: 'Signature seal matches the content', ok: sealState === 'valid', detail: sealState === 'valid' ? doc.signature.signer + ' signed this exact content on ' + new Date(doc.signature.signedAt).toLocaleString() + ' · SHA-256 ' + shortHash(doc.signature.hash) : 'The document changed after ' + doc.signature.signer + ' signed it — the seal ' + shortHash(doc.signature.hash) + ' no longer matches. Sign again, or remove the signature.' }]), [checks, doc, sealState]);
@@ -242,7 +242,7 @@ export function Assemble() {
                   <div className="menu" style={{ width: 380, padding: 14, left: 0, right: 'auto' }} data-testid="sign-popover">
                     <div className="row-between"><div className="card-h">Sign this document</div><button className="ib" style={{ width: 26, height: 26, borderRadius: 7 }} onClick={() => setSignOpen(false)} aria-label="Close"><Ic.x size={10} /></button></div>
                     <div style={{ fontSize: 11.5, color: 'var(--ink2)', margin: '4px 0 10px', lineHeight: 1.45 }}>Signatory on the form: <b style={{ color: 'var(--ink)' }}>{signerName || '(not filled yet)'}</b>. Signing places the image on the signature line and seals the exact content with SHA-256 — any later edit breaks the seal.</div>
-                    <SignatureLibrary compact onUse={(sig) => { const r = signDoc(doc.id, sig.id); toast(r.message, r.ok ? 'ok' : 'err'); if (r.ok) setSignOpen(false); }} />
+                    <SignatureLibrary compact suggestOwner={signerName} onUse={(sig) => { const r = signDoc(doc.id, sig.id); toast(r.message, r.ok ? 'ok' : 'err'); if (r.ok) setSignOpen(false); }} />
                     {doc.signature && <button className="btn sm danger" style={{ marginTop: 10 }} onClick={() => { unsignDoc(doc.id); setSignOpen(false); toast('Signature removed', 'ok'); }} data-testid="unsign">Remove signature</button>}
                   </div>
                 )}
@@ -302,7 +302,8 @@ export function Assemble() {
 
 function FormFields({ aiOn, template, doc, values, latestWo, signatories, locked, onChange, onBind }: { aiOn: boolean; template: Template; doc: Doc; values: Record<string, string>; latestWo: Doc | undefined; signatories: string[]; locked: boolean; onChange: (k: string, v: string) => void; onBind: (k: string, b: { attachmentId: string; column: string; fn: AggFn } | null) => void }) {
   const toast = useStore((st) => st.toast);
-  const sections = template.sections.filter((s) => !s.title || s.lines.some((l) => l.kind === 'pair'));
+  // the title block counts too when it holds fields — forms without numbered sections keep everything there
+  const sections = template.sections.filter((s) => !s.title || lineKeys(s.lines).length > 0);
   const draft = (f: Field) => async () => {
     try { onChange(f.key, await draftField(template, f, values)); toast('Drafted “' + f.label + '” with Qwen — read it and edit before filing', 'ok'); }
     catch (e) { if (!(values[f.key] || '').trim() && f.sample) onChange(f.key, f.sample); toast((e instanceof Error ? e.message : 'Qwen failed.') + (f.sample ? ' Inserted the wording from the original form instead.' : ''), 'err'); }
@@ -322,7 +323,7 @@ function FormFields({ aiOn, template, doc, values, latestWo, signatories, locked
         return (
           <div key={s.id} style={{ borderTop: '1px solid var(--line2)', paddingTop: 10 }} data-testid="section-form" data-section={s.id}>
             <div style={{ fontSize: 11, fontWeight: 700, letterSpacing: '.05em', color: 'var(--ink2)', marginBottom: 8, display: 'flex', justifyContent: 'space-between', gap: 8 }}>
-              <span>{s.heading.toUpperCase()}</span>{s.rule && <span className="fr" style={{ background: 'var(--green-l)', color: 'var(--green-t)' }}>conditional · included</span>}
+              <span>{(s.heading || (s.title ? 'Fields' : '')).toUpperCase()}</span>{s.rule && <span className="fr" style={{ background: 'var(--green-l)', color: 'var(--green-t)' }}>conditional · included</span>}
             </div>
             <div className="grid2" style={{ gap: 10 }}>
               {keys.map((k) => {
@@ -331,7 +332,7 @@ function FormFields({ aiOn, template, doc, values, latestWo, signatories, locked
                 const wide = f.type === 'text' && (f.sample.length > 28 || /desc|activity|control|hazard|measures/.test(k));
                 return (
                   <div key={k} style={{ gridColumn: wide || f.type === 'yesno' ? '1 / -1' : undefined }}>
-                    <FieldInput f={f} value={values[k] || ''} locked={locked} onChange={(v) => onChange(k, v)} onDraft={aiOn && wide && f.type === 'text' && !locked ? draft(f) : undefined} hint={hintFor(f, values[k] || '', doc, latestWo, signatories)} attachments={f.type === 'number' ? doc.attachments : []} binding={doc.bindings.find((b) => b.key === k) || null} onBind={(b) => onBind(k, b)} />
+                    <FieldInput f={f} value={values[k] || ''} locked={locked} onChange={(v) => onChange(k, v)} onDraft={aiOn && wide && f.type === 'text' && !locked ? draft(f) : undefined} hint={hintFor(f, values[k] || '', doc, latestWo, template.regimeShort === 'Unclassified' ? null : signatories)} attachments={f.type === 'number' ? doc.attachments : []} binding={doc.bindings.find((b) => b.key === k) || null} onBind={(b) => onBind(k, b)} />
                     {controllers.has(k) && controllers.get(k)!.map((cs) => { const r = evaluateRule(cs.rule, values, cs, template.fields); return (
                       <div key={cs.id} className={'rulecard ' + (r.included ? 'in' : 'out')} style={{ marginTop: 8 }} data-testid="rule-card" data-section={cs.id} data-included={r.included}>
                         <Ic.rule /><span>Rule: <b>{sectionLabel(cs)}</b> is <b>{r.included ? 'INCLUDED' : 'OMITTED'}</b> because {ruleText({ ...cs.rule!, value: values[k] || '(empty)' })}. Included when {ruleText(cs.rule!)}.</span>
@@ -348,9 +349,9 @@ function FormFields({ aiOn, template, doc, values, latestWo, signatories, locked
   );
 }
 
-function hintFor(f: Field, value: string, doc: Doc, latest: Doc | undefined, signatories: string[]): { text: string; kind: 'ai' | 'ok' | 'bad' } | null {
+function hintFor(f: Field, value: string, doc: Doc, latest: Doc | undefined, signatories: string[] | null): { text: string; kind: 'ai' | 'ok' | 'bad' } | null {
   if (f.role === 'imo' && value) return imoValid(value) ? { text: 'Checksum valid', kind: 'ok' } : { text: 'Checksum invalid — 7 digits, weighted sum must match the last digit', kind: 'bad' };
-  if (f.role === 'signatory' && value) return signatoryOk(value, signatories) ? { text: 'On the authorised-signatory list', kind: 'ok' } : { text: 'Not on the authorised-signatory list (Settings)', kind: 'bad' };
+  if (f.role === 'signatory' && value && signatories) return signatoryOk(value, signatories) ? { text: 'On the authorised-signatory list', kind: 'ok' } : { text: 'Not on the authorised-signatory list (Settings)', kind: 'bad' };
   if ((f.role === 'vessel' || f.role === 'workorder' || f.role === 'imo') && value && latest && !doc.seeded && (latest.vessel === value || Object.values(latest.values).includes(value))) {
     const wo = Object.entries(latest.values).find(([k]) => k === 'work_order_no')?.[1];
     return { text: 'Pre-filled from ' + (wo || latest.name), kind: 'ai' };
@@ -415,7 +416,7 @@ function FieldInput({ f, value, locked, onChange, onDraft, hint, attachments = [
           {value && !opts.includes(value) && <option value="__other">{value}</option>}
         </select>
       ) : f.type === 'date' ? (
-        <input className="input" type="date" value={toIso(value)} onChange={(e) => onChange(fromIso(e.target.value))} {...common} />
+        <input className="input" type="date" value={toIso(value)} onChange={(e) => onChange(fromIso(e.target.value, f))} {...common} />
       ) : (
         <input className="input" type="text" inputMode={f.type === 'number' ? 'decimal' : undefined} value={value} onChange={(e) => onChange(e.target.value)} placeholder={f.type === 'number' ? 'e.g. ' + (f.sample || '12.5 kg') : f.type === 'id' ? 'e.g. ' + (f.sample || 'WO-0000') : f.sample || ''} {...common} />
       )}
@@ -425,16 +426,16 @@ function FieldInput({ f, value, locked, onChange, onDraft, hint, attachments = [
   );
 }
 
-const MON = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
 function toIso(v: string): string {
-  const m = v.match(/^(\d{1,2})\s+([A-Za-z]{3})[a-z]*\.?\s+(\d{4})$/);
-  if (m) { const mi = MON.findIndex((x) => x.toLowerCase() === m[2].toLowerCase().slice(0, 3)); if (mi >= 0) return m[3] + '-' + String(mi + 1).padStart(2, '0') + '-' + m[1].padStart(2, '0'); }
-  if (/^\d{4}-\d{2}-\d{2}$/.test(v)) return v;
-  return '';
+  const t = parseAnyDate(v);
+  if (t === null) return '';
+  const d = new Date(t);
+  return d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0');
 }
-function fromIso(v: string): string {
+/** The picked date written back in the form's own style (18 Oct 2026 · 18.10.2026 · 18 октября 2026 г.). */
+function fromIso(v: string, f: Field): string {
   const m = v.match(/^(\d{4})-(\d{2})-(\d{2})$/);
-  return m ? parseInt(m[3]) + ' ' + MON[parseInt(m[2]) - 1] + ' ' + m[1] : '';
+  return m ? formatDate(new Date(+m[1], +m[2] - 1, +m[3]).getTime(), dateStyle(f)) : '';
 }
 
 

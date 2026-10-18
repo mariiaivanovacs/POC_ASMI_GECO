@@ -5,7 +5,7 @@ import { useStore } from '../store/useStore';
 import { Ic } from './ui/Icons';
 
 /** "My signatures" — the stored handwritten signatures, one default. */
-export function SignatureLibrary({ onUse, compact = false }: { onUse?: (s: Signature) => void; compact?: boolean }) {
+export function SignatureLibrary({ onUse, compact = false, suggestOwner = '' }: { onUse?: (s: Signature) => void; compact?: boolean; suggestOwner?: string }) {
   const signatures = useStore((s) => s.settings.signatures);
   const deleteSignature = useStore((s) => s.deleteSignature);
   const setDefault = useStore((s) => s.setDefaultSignature);
@@ -30,7 +30,7 @@ export function SignatureLibrary({ onUse, compact = false }: { onUse?: (s: Signa
           </div>
         ))}
       </div>
-      {adding ? <AddSignature onDone={() => setAdding(false)} onCancel={signatures.length ? () => setAdding(false) : undefined} /> : (
+      {adding ? <AddSignature suggestOwner={suggestOwner} onDone={() => setAdding(false)} onCancel={signatures.length ? () => setAdding(false) : undefined} /> : (
         <button className="btn" style={{ marginTop: 10 }} onClick={() => setAdding(true)} data-testid="signature-add">+ Add signature</button>
       )}
     </div>
@@ -38,12 +38,14 @@ export function SignatureLibrary({ onUse, compact = false }: { onUse?: (s: Signa
 }
 
 /** Draw / Upload / Type a signature and store it as a transparent PNG. */
-export function AddSignature({ onDone, onCancel }: { onDone: (s: Signature) => void; onCancel?: () => void }) {
-  const signatories = useStore((s) => s.settings.signatories);
+export function AddSignature({ onDone, onCancel, suggestOwner = '' }: { onDone: (s: Signature) => void; onCancel?: () => void; suggestOwner?: string }) {
+  // the person named on this form comes first, even when they are not on the company's authorised list
+  const listed = useStore((s) => s.settings.signatories);
+  const signatories = suggestOwner.trim() && !listed.some((x) => x.split(',')[0].trim().toLowerCase() === suggestOwner.split(',')[0].trim().toLowerCase()) ? [suggestOwner.trim(), ...listed] : listed;
   const addSignature = useStore((s) => s.addSignature);
   const toast = useStore((s) => s.toast);
   const [tab, setTab] = useState<'draw' | 'upload' | 'type'>('draw');
-  const [owner, setOwner] = useState(signatories[0] || '');
+  const [owner, setOwner] = useState((suggestOwner.trim() && signatories.find((x) => x.split(',')[0].trim().toLowerCase() === suggestOwner.split(',')[0].trim().toLowerCase())) || signatories[0] || '');
   const [typed, setTyped] = useState('');
   const [removeWhite, setRemoveWhite] = useState(true);
   const [asDefault, setAsDefault] = useState(true);

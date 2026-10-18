@@ -17,6 +17,14 @@ export interface Field {
   options?: string[]; // for list / yesno
   source: string; // the line the field was detected on
   manual?: boolean; // added by a person from a text selection
+  /** Where the value goes on the original when the form was blank: the literal blank (e.g. "________", "__.10.2026"). */
+  anchor?: string;
+  /** Which occurrence of the anchor on its source line (0 = first) — two identical blanks on one line stay apart. */
+  anchorNth?: number;
+  /** Blank form with nothing to overwrite (e.g. "ИНН" followed by spaces): the value is written right after this text. */
+  anchorAfter?: string;
+  /** How dates are written on this form: 18 Oct 2026 · 18.10.2026 · 18 октября 2026 г. */
+  fmt?: 'en' | 'dot' | 'ru';
 }
 
 export interface Rule { field: string; op: 'eq' | 'neq' | 'notEmpty'; value: string }

@@ -97,7 +97,8 @@ export function precheck(t: Tpl, values: Values, signatories: string[]): Check[]
     checks.push({ id: 'imo', label: 'IMO number checksum valid', ok: bad.length === 0, detail: bad.length ? bad.map((f) => (values[f.key] || '(empty)') + ' fails the 7-digit IMO check digit').join('; ') : imos.map((f) => values[f.key]).join(', ') + ' passes the IMO check digit' });
   }
 
-  const signers = active.filter((f) => f.role === 'signatory');
+  // the authorised-signatory list is a compliance-regime rule; an unclassified form (HR application, letter) is signed by whoever it names
+  const signers = t.regimeShort === 'Unclassified' ? [] : active.filter((f) => f.role === 'signatory');
   if (signers.length) {
     const bad = signers.filter((f) => !signatoryOk(values[f.key] || '', signatories));
     checks.push({ id: 'signatory', label: 'Signatory on the authorised list', ok: bad.length === 0, detail: bad.length ? bad.map((f) => (values[f.key] || '(empty)') + ' is not on the authorised-signatory list (' + f.label + ')').join('; ') : signers.map((f) => values[f.key].split(',')[0]).join(', ') + ' authorised in Settings' });
@@ -136,7 +137,12 @@ export function precheck(t: Tpl, values: Values, signatories: string[]): Check[]
 
 export function docFileName(t: Tpl, values: Values, ext: string): string {
   const f = (role: string) => t.fields.find((x) => x.role === role);
-  const slug = (s: string) => s.replace(/[^A-Za-z0-9]+/g, '-').replace(/^-|-$/g, '');
+  const slug = (s: string) => s.replace(/[^\p{L}\p{N}]+/gu, '-').replace(/^-|-$/g, '').slice(0, 60);
+  // forms outside the known regimes (an HR application, a letter) are named after the template and the person/subject
+  if (t.regimeShort === 'Unclassified') {
+    const who = values[f('signatory')?.key || ''] || values[t.fields.find((x) => x.type === 'text' && (values[x.key] || '').trim())?.key || ''] || '';
+    return [slug((t as { name?: string }).name || 'Document'), slug(who)].filter(Boolean).join('_') + '.' + ext;
+  }
   const where = values[f('vessel')?.key || ''] || values[t.fields.find((x) => /site|workplace|location/i.test(x.label))?.key || ''] || 'Harbourline';
   const ref = values[f('workorder')?.key || ''] || '';
   return [slug(t.regimeShort), slug(where), slug(ref)].filter(Boolean).join('_') + '.' + ext;

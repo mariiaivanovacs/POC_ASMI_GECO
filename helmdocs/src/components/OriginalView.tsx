@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from 'react';
 import type { Field } from '../data/types';
 import { getOriginal, type Original } from '../engine/originals';
 import { findRects, layoutOf, loadPdf, type PdfLayout, type Rect } from '../engine/pdfLayout';
+import { planFill } from '../engine/fillPdf';
 
 /**
  * The uploaded form exactly as it was received — the real PDF pages (pdf.js), the Word document's own content
@@ -18,6 +19,15 @@ export function OriginalView({ ownerId, fields, onMissing }: { ownerId: string; 
 }
 
 const HL = 'rgba(59,130,246,.22)';
+
+/** Where each field sits on the page — its value if the form was filled in, otherwise the blank (or the gap after its label). */
+function highlightMarks(layout: PdfLayout, fields: Field[]): Mark[] {
+  const plan = planFill(layout, { id: '', name: '', regime: '', regimeShort: '', fields, sections: [] }, Object.fromEntries(fields.map((f) => [f.key, f.sample])));
+  const placed = plan.placements.map((p) => ({ r: p.rect, key: p.field.key, label: p.field.label + ' · ' + p.field.type }));
+  // repeated values (one person as contact and signatory) are highlighted wherever they appear
+  const extra = fields.filter((f) => f.sample.trim().length >= 4).flatMap((f) => findRects(layout, f.sample, 3).filter((r) => !placed.some((m) => m.r.page === r.page && Math.abs(m.r.x - r.x) < 1 && Math.abs(m.r.y - r.y) < 1)).map((r) => ({ r, key: f.key, label: f.label + ' · ' + f.type })));
+  return [...placed, ...extra];
+}
 const HL_LINE = 'rgba(59,130,246,.85)';
 
 export interface Mark { r: Rect; key: string; label: string; color?: string }
@@ -34,7 +44,7 @@ export function PdfPages({ bytes, fields = [], marks }: { bytes: ArrayBuffer; fi
   if (err) return <div className="paper">{err}</div>;
   return (
     <div ref={host} style={{ display: 'flex', flexDirection: 'column', gap: 14, alignItems: 'center' }} data-testid="original-pdf">
-      {doc && layout && (() => { const all: Mark[] = marks ? marks(layout) : fields.flatMap((f) => findRects(layout, f.sample, 2).map((r) => ({ r, key: f.key, label: f.label + ' · ' + f.type }))); return layout.pages.map((pg, i) => <PdfPage key={i} doc={doc} index={i} page={pg} width={width} rects={all.filter((m) => m.r.page === i)} />); })()}
+      {doc && layout && (() => { const all: Mark[] = marks ? marks(layout) : highlightMarks(layout, fields); return layout.pages.map((pg, i) => <PdfPage key={i} doc={doc} index={i} page={pg} width={width} rects={all.filter((m) => m.r.page === i)} />); })()}
       {(!doc || !layout) && <div className="paper" style={{ minHeight: 300 }}>Rendering pages…</div>}
     </div>
   );
@@ -45,9 +55,12 @@ function PdfPage({ doc, index, page, width, rects }: { doc: any; index: number; 
   const canvas = useRef<HTMLCanvasElement>(null);
   const scale = width / page.width;
   useEffect(() => {
+    // one render at a time per canvas: a render that starts after this effect was cleaned up must not run at all,
+    // otherwise two pdf.js renders paint the same canvas and the page comes out scrambled
     let task: { cancel: () => void; promise: Promise<void> } | null = null;
+    let cancelled = false;
     void doc.getPage(index + 1).then((p: { getViewport: (o: { scale: number }) => { width: number; height: number }; render: (o: unknown) => { cancel: () => void; promise: Promise<void> } }) => {
-      const c = canvas.current; if (!c) return;
+      const c = canvas.current; if (!c || cancelled) return;
       const dpr = window.devicePixelRatio || 1;
       const vp = p.getViewport({ scale: scale * dpr });
       c.width = vp.width; c.height = vp.height;
@@ -55,7 +68,7 @@ function PdfPage({ doc, index, page, width, rects }: { doc: any; index: number; 
       task = p.render({ canvasContext: c.getContext('2d'), viewport: vp });
       task.promise.catch(() => undefined);
     });
-    return () => task?.cancel();
+    return () => { cancelled = true; task?.cancel(); };
   }, [doc, index, scale]);
   return (
     <div style={{ position: 'relative', boxShadow: '0 8px 28px rgba(0,0,0,.35)', background: '#fff', lineHeight: 0 }} data-testid="original-page">
@@ -68,35 +81,51 @@ function PdfPage({ doc, index, page, width, rects }: { doc: any; index: number; 
   );
 }
 
-function highlightHtml(html: string, fields: Pick<Field, 'key' | 'label' | 'sample'>[]): string {
+type HlField = Pick<Field, 'key' | 'label' | 'sample'> & Partial<Pick<Field, 'anchor' | 'anchorNth' | 'anchorAfter' | 'source'>>;
+
+/** Mark each field inside the paragraph it came from: its value, its blank (n-th underscore run) or the label it follows. */
+function highlightHtml(html: string, fields: HlField[]): string {
   const doc = new DOMParser().parseFromString('<div>' + html + '</div>', 'text/html');
   doc.querySelectorAll('script,style,iframe,object').forEach((n) => n.remove());
   doc.querySelectorAll('*').forEach((el) => { for (const a of Array.from(el.attributes)) if (/^on/i.test(a.name)) el.removeAttribute(a.name); });
-  const samples = fields.map((f) => ({ f, s: f.sample.trim() })).filter((x) => x.s.length >= 2).sort((a, b) => b.s.length - a.s.length);
-  const walker = doc.createTreeWalker(doc.body, NodeFilter.SHOW_TEXT);
-  const nodes: Text[] = []; while (walker.nextNode()) nodes.push(walker.currentNode as Text);
-  for (const node of nodes) {
-    let text = node.data;
-    const hits: { start: number; end: number; f: Pick<Field, 'key' | 'label' | 'sample'> }[] = [];
-    for (const { f, s } of samples) {
-      const i = text.indexOf(s);
-      if (i >= 0 && !hits.some((h) => i < h.end && i + s.length > h.start)) hits.push({ start: i, end: i + s.length, f });
+  const ws = (x: string) => x.replace(/\s+/g, '').toLowerCase();
+  const blocks = Array.from(doc.body.querySelectorAll('p,h1,h2,h3,h4,h5,h6,li,td,th,pre'));
+  if (!blocks.length) blocks.push(doc.body);
+  const done = new Set<string>();
+  for (const block of blocks) {
+    const walker = doc.createTreeWalker(block, NodeFilter.SHOW_TEXT);
+    const nodes: { n: Text; start: number }[] = []; let text = '';
+    while (walker.nextNode()) { const n = walker.currentNode as Text; nodes.push({ n, start: text.length }); text += n.data; }
+    if (!text.trim()) continue;
+    const bt = ws(text);
+    const hits: { start: number; end: number; f: HlField }[] = [];
+    const free = (a: number, b: number) => !hits.some((h) => a < h.end && b > h.start);
+    for (const f of [...fields].sort((a, b) => (b.sample || b.anchor || '').length - (a.sample || a.anchor || '').length)) {
+      const src = ws(f.source || '');
+      const here = !src || bt === src || (bt.length > 6 && src.includes(bt)) || (src.length > 6 && bt.includes(src));
+      let at = -1, end = -1;
+      const sample = (f.sample || '').trim();
+      if (sample.length >= 2) { at = text.indexOf(sample); end = at + sample.length; if (at >= 0 && !here && done.has(f.key + ':' + sample)) at = -1; }
+      else if (here && f.anchor && /^_+$/.test(f.anchor)) { const r = [...text.matchAll(/_+/g)][f.anchorNth ?? 0]; if (r) { at = r.index!; end = at + r[0].length; } }
+      else if (here && f.anchor) { at = text.indexOf(f.anchor); end = at + f.anchor.length; }
+      else if (here && f.anchorAfter) { at = text.indexOf(f.anchorAfter); end = at + f.anchorAfter.length; }
+      if (at >= 0 && free(at, end)) { hits.push({ start: at, end, f }); done.add(f.key + ':' + sample); }
     }
-    if (!hits.length) continue;
-    hits.sort((a, b) => a.start - b.start);
-    const frag = doc.createDocumentFragment(); let at = 0;
-    for (const h of hits) {
-      frag.append(text.slice(at, h.start));
-      const m = doc.createElement('mark'); m.className = 'ohl'; m.title = h.f.label; m.setAttribute('data-field', h.f.key); m.textContent = text.slice(h.start, h.end);
-      frag.append(m); at = h.end;
+    // wrap each hit, splitting it across the text nodes it spans
+    for (const h of hits.sort((a, b) => b.start - a.start)) {
+      for (const { n, start } of [...nodes].reverse()) {
+        const a = Math.max(h.start, start), b = Math.min(h.end, start + n.data.length);
+        if (a >= b) continue;
+        const range = doc.createRange(); range.setStart(n, a - start); range.setEnd(n, b - start);
+        const m = doc.createElement('mark'); m.className = 'ohl'; m.title = h.f.label; m.setAttribute('data-field', h.f.key);
+        range.surroundContents(m);
+      }
     }
-    frag.append(text.slice(at)); text = '';
-    node.replaceWith(frag);
   }
   return (doc.body.firstChild as HTMLElement).innerHTML;
 }
 
-export function DocxView({ bytes, fields }: { bytes: ArrayBuffer; fields: Pick<Field, 'key' | 'label' | 'sample'>[] }) {
+export function DocxView({ bytes, fields }: { bytes: ArrayBuffer; fields: HlField[] }) {
   const [html, setHtml] = useState<string | null>(null);
   useEffect(() => { let live = true; void import('mammoth').then((m) => m.convertToHtml({ arrayBuffer: bytes.slice(0) })).then((r) => live && setHtml(r.value)).catch(() => live && setHtml('<p>Could not render this Word file.</p>')); return () => { live = false; }; }, [bytes]);
   return <div className="paper original-docx" data-testid="original-docx" dangerouslySetInnerHTML={{ __html: html === null ? '<p>Rendering…</p>' : highlightHtml(html, fields) }} />;

@@ -1,5 +1,5 @@
 import type { Field, FieldType, Line, Section, Template } from '../data/types';
-import { LEXICON, inferType, keyFor, type Detection } from './fields';
+import { LEXICON, inferType, keyFor, lineKeys, type Detection } from './fields';
 
 export const PLACEHOLDER = /\{\{([a-z0-9_]+)\}\}/g;
 
@@ -111,6 +111,11 @@ export function addFieldFromSelection(fields: Field[], sections: Section[], sect
   const inferred = inferType(clean, text);
   const key = uniqueKey(keyFor(clean), fields);
   const field: Field = { key, role: inferred.role, label: clean, type: type || inferred.type, options: optionsFor({ key, role: inferred.role, label: clean, type: type || inferred.type, confidence: 100, required: true, sample: text, source: line.text }, type || inferred.type), confidence: 100, required: true, sample: text, source: line.text, manual: true };
+  // an empty blank ("________") is where the value goes on the original, not a sample value
+  if (/^[_\s.]+$/.test(text) && /_{3,}/.test(text)) {
+    const before = parts.slice(0, idx).join('') + parts[idx].slice(0, parts[idx].indexOf(text));
+    Object.assign(field, { sample: '', anchor: text, anchorNth: /^_+$/.test(text) ? (before.match(/_+/g) || []).length : 0 });
+  }
   parts[idx] = parts[idx].replace(text, '{{' + key + '}}');
   const next = sections.map((x) => (x.id !== sectionId ? x : { ...x, lines: x.lines.map((l, i) => (i === lineIndex ? { kind: 'text' as const, text: parts.join('') } : l)) }));
   return { fields: [...fields, field], sections: next, field };
@@ -119,9 +124,11 @@ export function addFieldFromSelection(fields: Field[], sections: Section[], sect
 /** Fields that sit in a signature block: who signs and the signing date. */
 export function signatureFields(fields: Field[], sections: Section[]): { section: Section; signatory: Field | null; date: Field | null }[] {
   return sections.filter((s) => s.signature).map((s) => {
-    const keys = s.lines.filter((l): l is { kind: 'pair'; key: string } => l.kind === 'pair').map((l) => l.key);
+    const keys = lineKeys(s.lines); // pairs and blanks inside prose ("{{data}}   ____   {{rasshifrovka_podpisi}}")
     const fs = keys.map((k) => fieldByKey(fields, k)).filter((f): f is Field => !!f);
-    return { section: s, signatory: fs.find((f) => f.role === 'signatory') || null, date: fs.find((f) => f.type === 'date') || null };
+    // signature rows sit at the bottom of their block, so the last signatory / date in it are the ones next to the signature
+    const rev = [...fs].reverse();
+    return { section: s, signatory: rev.find((f) => f.role === 'signatory') || null, date: rev.find((f) => f.type === 'date') || null };
   });
 }
 

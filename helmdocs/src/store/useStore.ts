@@ -1,9 +1,9 @@
 import { create } from 'zustand';
 import { createJSONStorage, persist } from 'zustand/middleware';
 import type { AggFn, DeadlineRule, Doc, DocStatus, ExportKind, Field, FieldType, Section, Settings, Signature, Stage, Template, Upload } from '../data/types';
-import { DEFAULT_SETTINGS, buildSeed, fmtDate } from '../data/seed';
+import { DEFAULT_SETTINGS, buildSeed } from '../data/seed';
 import { ExtractError, extOf, extractText, kindOf } from '../engine/extract';
-import { detectFields } from '../engine/fields';
+import { dateStyle, detectFields, formatDate } from '../engine/fields';
 import { aiAvailable, refineDetection } from '../engine/llm';
 import { deleteOriginal, moveOriginal, putOriginal } from '../engine/originals';
 import { addFieldFromSelection, buildTemplate, carryValues, deleteField, renameField, retypeField, sampleValues } from '../engine/template';
@@ -275,7 +275,7 @@ export const useStore = create<State>()(
           else if (f.role === 'vessel') values[f.key] = latest?.values[f.key] || anyLatest?.vessel || '';
           else if (f.role === 'imo') values[f.key] = latest?.values[f.key] || (anyLatest ? Object.entries(anyLatest.values).find(([k]) => /imo/.test(k))?.[1] || '' : '');
           else if (f.role === 'workorder' && f.key === 'work_order_no') values[f.key] = anyLatest ? Object.entries(anyLatest.values).find(([k]) => k === 'work_order_no')?.[1] || '' : '';
-          else if (f.type === 'date') values[f.key] = fmtDate(now);
+          else if (f.type === 'date') values[f.key] = formatDate(now, dateStyle(f));
           else values[f.key] = '';
         }
         const d: Doc = {
@@ -296,7 +296,7 @@ export const useStore = create<State>()(
         const from = get().templates.find((x) => x.id === d.templateId);
         const r = carryValues(from?.fields || [], d.values, to.fields);
         // fields nothing carried into get the same pre-fill a new document would (company from the form, dates today)
-        for (const f of r.toFill) { if (f.role === 'company' && f.sample) r.values[f.key] = f.sample; else if (f.type === 'date') r.values[f.key] = fmtDate(Date.now()); }
+        for (const f of r.toFill) { if (f.role === 'company' && f.sample) r.values[f.key] = f.sample; else if (f.type === 'date') r.values[f.key] = formatDate(Date.now(), dateStyle(f)); }
         const keys = new Set(to.fields.map((f) => f.key));
         const note = 'Template switched from ' + (from?.name || d.templateName) + ' to ' + to.name + ' (' + r.carried.length + ' values carried over)';
         set({ docs: get().docs.map((x) => (x.id === docId ? snapshot({ ...x, templateId: to.id, templateName: to.name, regimeShort: to.regimeShort, values: r.values, status: 'draft', reviewedAt: null, signature: null, bindings: x.bindings.filter((b) => keys.has(b.key)), manualMinutes: to.manualMinutes, name: docFileName(to, r.values, 'pdf'), vessel: docVessel(to, r.values), lastEditAt: Date.now() }, note, get().settings.reviewer) : x)) });

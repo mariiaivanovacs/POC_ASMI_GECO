@@ -69,11 +69,16 @@ async function extractPdf(file: File, onProgress?: (pct: number) => void): Promi
     const page = await doc.getPage(p);
     const content = await page.getTextContent();
     let last: number | null = null;
+    let lastEnd = 0;
     let line = '';
-    for (const item of content.items as { str: string; transform: number[] }[]) {
+    for (const item of content.items as { str: string; transform: number[]; width: number }[]) {
       const y = Math.round(item.transform[5]);
       if (last !== null && Math.abs(y - last) > 2) { parts.push(line); line = ''; }
-      line += (line ? ' ' : '') + item.str;
+      // a space only where the page has a gap — "+7 (912) 345-67-89" stays one value, not "+7 ( 9 12 ) 345 - 67 - 89"
+      const size = Math.abs(item.transform[3]) || 10;
+      const gap = item.transform[4] - lastEnd;
+      line += (line && (gap > size * 0.15 || gap < -size) && !/\s$/.test(line) && !/^\s/.test(item.str) ? (gap > size * 1.5 ? '    ' : ' ') : '') + item.str; // wide gaps stay wide: columns of blanks / captions
+      lastEnd = item.transform[4] + (item.width || 0);
       last = y;
     }
     if (line) parts.push(line);

@@ -5,7 +5,6 @@ import { dataUrlBytes, shortHash, verifySeal } from './signature';
 
 type Tpl = Pick<Template, 'id' | 'fields' | 'sections' | 'regimeShort' | 'regime' | 'name'>;
 const W = 'http://schemas.openxmlformats.org/wordprocessingml/2006/main';
-const squash = (s: string) => s.replace(/\s+/g, ' ').trim().toLowerCase();
 
 export interface DocxPlacement { field: Field; text: string; changed: boolean }
 export interface DocxFill { bytes: Uint8Array; placements: DocxPlacement[]; unplaced: Field[]; signed: boolean }
@@ -35,6 +34,23 @@ function replaceRange(para: Para, start: number, end: number, value: string) {
   }
 }
 
+
+/** Put a run (the signature drawing) where characters [start, end) of the paragraph were, splitting the run that holds them. */
+function insertRunAt(para: Para, start: number, end: number, run: Element) {
+  const hit = para.nodes.find(({ t, start: s0 }) => start >= s0 && start <= s0 + (t.textContent || '').length);
+  replaceRange(para, start, end, '');
+  if (!hit) { para.p.appendChild(run); return; }
+  const r = hit.t.parentNode as Element; // <w:r>
+  const txt = hit.t.textContent || '';
+  const cut = start - hit.start;
+  const tail = r.cloneNode(true) as Element;
+  hit.t.textContent = txt.slice(0, cut); hit.t.setAttribute('xml:space', 'preserve');
+  const tailT = Array.from(tail.getElementsByTagNameNS(W, 't'))[0];
+  if (tailT) { tailT.textContent = txt.slice(cut); tailT.setAttribute('xml:space', 'preserve'); }
+  r.parentNode!.insertBefore(run, r.nextSibling);
+  if (tailT && tailT.textContent) run.parentNode!.insertBefore(tail, run.nextSibling);
+}
+
 function omittedKeys(t: Tpl, values: Record<string, string>): Set<string> {
   const out = new Set<string>();
   for (const s of t.sections) if (s.rule && !evaluateRule(s.rule, values, s, t.fields).included) for (const k of lineKeys(s.lines)) out.add(k);
@@ -62,31 +78,68 @@ export async function buildFilledDocx(bytes: ArrayBuffer, t: Tpl, doc: Pick<Doc,
 
   // 1 · decide where each field goes (line it was detected on first; shared samples each keep their own paragraph)
   const claimed = new Set<string>();
-  const plan: { field: Field; pi: number; start: number; text: string }[] = [];
+  const plan: { field: Field; pi: number; start: number; end: number; text: string; insert?: boolean }[] = [];
   const unplaced: Field[] = [];
-  for (const f of [...t.fields].filter((x) => x.sample.trim()).sort((a, b) => b.sample.length - a.sample.length)) {
-    const sample = f.sample.trim();
-    const hits: { pi: number; start: number }[] = [];
-    paras.forEach((p, pi) => { let i = p.text.indexOf(sample); while (i >= 0) { if (!claimed.has(pi + ':' + i)) hits.push({ pi, start: i }); i = p.text.indexOf(sample, i + 1); } });
-    const src = squash(f.source || '');
-    const onSource = hits.find((h) => { const pt = squash(paras[h.pi].text); return !!src && (pt.includes(src) || src.includes(pt)); });
-    const pick = onSource || (sample.length >= 4 ? hits[0] : undefined);
-    if (!pick) { unplaced.push(f); continue; }
-    claimed.add(pick.pi + ':' + pick.start);
-    plan.push({ field: f, pi: pick.pi, start: pick.start, text: omitted.has(f.key) ? 'N/A' : (doc.values[f.key] ?? '') });
+  const ws = (x: string) => x.replace(/\s+/g, '').toLowerCase();
+  const onSource = (f: Field) => { const s0 = ws(f.source || ''); return paras.map((p, pi) => ({ p, pi })).filter(({ p }) => { const t = ws(p.text); return !!s0 && !!t && (t === s0 || (t.length > 6 && s0.includes(t)) || (s0.length > 6 && t.includes(s0))); }); };
+  const anchorOf = (f: Field) => f.sample.trim() || f.anchor || f.anchorAfter || '';
+  for (const f of [...t.fields].filter((x) => anchorOf(x)).sort((a, b) => anchorOf(b).length - anchorOf(a).length)) {
+    const text = omitted.has(f.key) ? 'N/A' : (doc.values[f.key] ?? '');
+    let hit: { pi: number; start: number; end: number; insert?: boolean } | undefined;
+    if (f.sample.trim()) {
+      const sample = f.sample.trim();
+      const hits: { pi: number; start: number; end: number }[] = [];
+      paras.forEach((p, pi) => { for (let i = p.text.indexOf(sample); i >= 0; i = p.text.indexOf(sample, i + 1)) if (!claimed.has(pi + ':' + i)) hits.push({ pi, start: i, end: i + sample.length }); });
+      const src = new Set(onSource(f).map((x) => x.pi));
+      hit = hits.find((h) => src.has(h.pi)) || (sample.length >= 4 ? hits[0] : undefined);
+    } else if (f.anchor && /^_+$/.test(f.anchor)) {
+      for (const { p, pi } of onSource(f)) { const r = [...p.text.matchAll(/_+/g)][f.anchorNth ?? 0]; if (r && !claimed.has(pi + ':' + r.index)) { hit = { pi, start: r.index!, end: r.index! + r[0].length }; break; } }
+    } else if (f.anchor) {
+      for (const { p, pi } of onSource(f)) { const k = p.text.indexOf(f.anchor); if (k >= 0 && !claimed.has(pi + ':' + k)) { hit = { pi, start: k, end: k + f.anchor.length }; break; } }
+    } else if (f.anchorAfter) {
+      for (const { p, pi } of onSource(f)) {
+        const k = p.text.indexOf(f.anchorAfter);
+        if (k < 0) continue;
+        const from = k + f.anchorAfter.length;
+        const gap = p.text.slice(from).match(/^\s*/)![0].length;
+        // write into the gap after the label, keeping one space either side
+        hit = { pi, start: from, end: from + Math.max(0, gap - 1), insert: true };
+        break;
+      }
+    }
+    if (!hit) { unplaced.push(f); continue; }
+    claimed.add(hit.pi + ':' + hit.start);
+    plan.push({ field: f, ...hit, text });
   }
   // 2 · apply right-to-left inside each paragraph so earlier offsets stay valid
   for (const pl of [...plan].sort((a, b) => a.pi - b.pi || b.start - a.start)) {
-    if (pl.text === pl.field.sample.trim()) continue;
-    replaceRange(paras[pl.pi], pl.start, pl.start + pl.field.sample.trim().length, pl.text);
+    if (pl.text === pl.field.sample.trim() && pl.field.sample.trim()) continue;
+    if (!pl.text && !pl.field.sample.trim()) continue; // blank stays a blank
+    replaceRange(paras[pl.pi], pl.start, pl.end, pl.insert ? ' ' + pl.text : pl.text);
   }
   paras = paragraphs(xml);
 
-  // 3 · signature image on the "Signature: ____" line (only while the seal matches)
+  // 3 · signature image: over the blank above a "(подпись)" caption, else on a "Signature: ____" line (only while the seal matches)
   const state = doc.signature ? verifySeal(t, doc) : 'none';
   let signed = false;
   if (doc.signature && state === 'valid') {
-    const target = [...paras].reverse().find((p) => /sign/i.test(p.text) && /_{4,}/.test(p.text)) || [...paras].reverse().find((p) => /^\s*signature\b/i.test(p.text));
+    const CAP = /\(([^()]*?)\)/g;
+    let target: { para: Para; start: number; end: number } | null = null;
+    for (let k = paras.length - 1; k > 0 && !target; k--) {
+      const caps = [...paras[k].text.matchAll(CAP)].map((m) => m[1]);
+      const ci = caps.findIndex((c) => /подпис|signature|\bsign\b|tandatangan|签名|签字/iu.test(c));
+      if (ci < 0) continue;
+      let a = k - 1; while (a >= 0 && !paras[a].text.trim()) a--;
+      if (a < 0) continue;
+      const runs = [...paras[a].text.matchAll(/_{3,}/g)];
+      const r = runs.length === caps.length ? runs[ci] : runs[Math.min(ci, runs.length - 1)];
+      if (r) target = { para: paras[a], start: r.index!, end: r.index! + r[0].length };
+    }
+    if (!target) {
+      const p = [...paras].reverse().find((x) => /sign|подпис/i.test(x.text) && /_{4,}/.test(x.text));
+      const m = p?.text.match(/_{4,}/);
+      if (p && m && m.index !== undefined) target = { para: p, start: m.index, end: m.index + m[0].length };
+    }
     if (target) {
       const png = dataUrlBytes(doc.signature.png);
       zip.file('word/media/helmdocs-signature.png', png);
@@ -102,12 +155,10 @@ export async function buildFilledDocx(bytes: ArrayBuffer, t: Tpl, doc: Pick<Doc,
       const ctPath = '[Content_Types].xml';
       const ct = await zip.file(ctPath)!.async('string');
       if (!/Extension="png"/i.test(ct)) zip.file(ctPath, ct.replace('</Types>', '<Default Extension="png" ContentType="image/png"/></Types>'));
-      const m = target.text.match(/_{4,}/);
-      if (m && m.index !== undefined) replaceRange(target, m.index, m.index + m[0].length, ' ');
       const { w, h } = pngSize(png);
-      const cy = 457200; // 0.5 inch tall
+      const cy = 400050; // ~0.44 inch tall, sits on the blank line
       const run = new DOMParser().parseFromString(drawingXml(rid, Math.round((cy * w) / h), cy), 'application/xml').documentElement;
-      target.p.appendChild(xml.importNode(run, true));
+      insertRunAt(target.para, target.start, target.end, xml.importNode(run, true) as Element);
       signed = true;
     }
   }
@@ -121,5 +172,5 @@ export async function buildFilledDocx(bytes: ArrayBuffer, t: Tpl, doc: Pick<Doc,
 
   zip.file('word/document.xml', new XMLSerializer().serializeToString(xml));
   const out = await zip.generateAsync({ type: 'uint8array', compression: 'DEFLATE' });
-  return { bytes: out, placements: plan.map((x) => ({ field: x.field, text: x.text, changed: x.text !== x.field.sample.trim() })), unplaced, signed };
+  return { bytes: out, placements: plan.map((x) => ({ field: x.field, text: x.text, changed: !!x.text && x.text !== x.field.sample.trim() })), unplaced, signed };
 }

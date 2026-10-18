@@ -52,7 +52,7 @@ const MAX_FORM_CHARS = 12_000;
 export interface Refined { fields: Field[]; sections: Section[]; added: number; changed: number; regime?: string }
 
 export async function refineDetection(text: string, d: Detection): Promise<Refined> {
-  const system = 'You are an expert in marine and offshore compliance paperwork (IHM, SHMS, WSH, TIW, Scope 3 and similar forms). You turn a filled-in form into a reusable template by finding the values that change from job to job. Answer with a single JSON object and nothing else.';
+  const system = 'You are an expert in marine and offshore compliance paperwork (IHM, SHMS, WSH, TIW, Scope 3 and similar forms). You turn a form (filled in or blank, in any language) into a reusable template by finding the values that change from one filing to the next. Answer with a single JSON object and nothing else.';
   const found = d.fields.map((f) => ({ key: f.key, label: f.label, type: f.type, required: f.required, sample: f.sample }));
   const user = `FORM TEXT:
 """
@@ -64,7 +64,7 @@ ${JSON.stringify(found)}
 
 Review that result against the form and return JSON with exactly this shape:
 {
-  "additions": [ { "label": "Human-readable name in plain words, e.g. \"Fire watch duration\" (never snake_case or camelCase)", "type": "text|number|id|date|yesno|list", "sample": "the EXACT characters from the form text that are the variable value" } ],
+  "additions": [ { "label": "Human-readable name in plain words IN THE SAME LANGUAGE AS THE FORM (e.g. \"Fire watch duration\", \"Должность\"; never snake_case)", "type": "text|number|id|date|yesno|list", "sample": "the EXACT characters from the form text that are the variable value — for an empty blank, the exact run of underscores" } ],
   "changes": [ { "key": "existing key", "label": "better label (optional)", "type": "better type (optional)", "required": true } ],
   "regime": "name of the compliance regime this form belongs to, or null"
 }

@@ -264,7 +264,7 @@ export function Templates() {
   );
 }
 
-function sectionLabelOf(heading: string): string { const m = heading.match(/^(\d{1,2})\./); return m ? 'Section ' + m[1] : heading || 'Section'; }
+function sectionLabelOf(heading: string): string { const m = heading.match(/^(\d{1,2})\./); return m ? 'Section ' + m[1] : heading || 'signature line'; }
 
 function statusText(u: Upload): string {
   if (u.status === 'detected') return u.pages + ' page' + (u.pages === 1 ? '' : 's') + ' · ' + u.kind + ' · not saved yet';

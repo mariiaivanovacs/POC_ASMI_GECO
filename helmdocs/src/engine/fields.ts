@@ -56,7 +56,10 @@ export function imoValid(v: string): boolean {
 }
 
 const MONTHS = 'jan|feb|mar|apr|may|jun|jul|aug|sep|sept|oct|nov|dec';
-export const DATE_RE = new RegExp('\\b(\\d{1,2}\\s+(?:' + MONTHS + ')[a-z]*\\.?\\s+\\d{4}|\\d{4}-\\d{2}-\\d{2}|\\d{1,2}[/.]\\d{1,2}[/.]\\d{2,4})\\b', 'i');
+export const RU_MONTHS = ['января', 'февраля', 'марта', 'апреля', 'мая', 'июня', 'июля', 'августа', 'сентября', 'октября', 'ноября', 'декабря'];
+export const DATE_RE = new RegExp('(?<![\\p{L}\\d])(«?\\d{1,2}»?\\s+(?:' + RU_MONTHS.join('|') + ')\\s+\\d{4}(?:\\s*г\\.?)?|\\d{1,2}\\s+(?:' + MONTHS + ')[a-z]*\\.?\\s+\\d{4}|\\d{4}-\\d{2}-\\d{2}|\\d{1,2}[/.]\\d{1,2}[/.]\\d{2,4})(?![\\p{L}\\d])', 'iu');
+/** A date blank on a printed form: "__.10.2026", "__.__.____", "«__» ______ 20__". */
+export const DATE_BLANK_RE = /(?:_{1,3}|\d{1,2})\.(?:_{1,3}|\d{1,2})\.(?:_{2,4}|\d{2,4})|«_{1,3}»\s*_{3,}\s*(?:20)?_{2,4}(?:\s*г\.?)?/u;
 export const CODE_RE = /\b([A-Z]{2,6}(?:-[A-Z0-9]{1,6}){1,3})\b/;
 export const IMO_RE = /\b(?:IMO\s*)?(\d{7})\b/i;
 export const QTY_RE = /^([\d,]+(?:\.\d+)?)\s*(kg|g|t|tonnes?|L|litres?|m³|m3|m²|m2|m|mm|pcs|units?|hrs?|hours?|days?|%|mg\/kg|ppm|kWh|MWh|tCO2e|kgCO2e)?$/i;
@@ -72,8 +75,11 @@ export function isQuantity(v: string): boolean { return QTY_RE.test(v.trim()) &&
 const ABBREV: Record<string, string> = { hazardous: 'haz', number: 'no', quantity: 'qty', description: 'desc', reference: 'ref', authorised: 'auth', authorized: 'auth' };
 const KEY_STOP = new Set(['of', 'the', 'on', 'a', 'an', 'and', 'or', 'in', 'for', 'to', 'at', 'by']);
 
+const TRANSLIT: Record<string, string> = { а: 'a', б: 'b', в: 'v', г: 'g', д: 'd', е: 'e', ё: 'e', ж: 'zh', з: 'z', и: 'i', й: 'y', к: 'k', л: 'l', м: 'm', н: 'n', о: 'o', п: 'p', р: 'r', с: 's', т: 't', у: 'u', ф: 'f', х: 'h', ц: 'ts', ч: 'ch', ш: 'sh', щ: 'sch', ъ: '', ы: 'y', ь: '', э: 'e', ю: 'yu', я: 'ya' };
+export function translit(s: string): string { return s.toLowerCase().replace(/[а-яё]/g, (c) => TRANSLIT[c] ?? c); }
+
 export function keyFor(label: string): string {
-  const all = label.toLowerCase().replace(/\(.*?\)/g, ' ').replace(/[^a-z0-9]+/g, ' ').trim().split(/\s+/).filter(Boolean);
+  const all = translit(label).replace(/\(.*?\)/g, ' ').replace(/[^a-z0-9]+/g, ' ').trim().split(/\s+/).filter(Boolean);
   const words = (all.length <= 2 ? all : all.filter((w) => !KEY_STOP.has(w))).map((w) => ABBREV[w] || w);
   return (words.slice(0, 4).join('_') || 'field').replace(/^\d/, 'f$&');
 }
@@ -82,15 +88,20 @@ const ROLE_RULES: [RegExp, Role][] = [
   [/\bIMO\b/i, 'imo'],
   [/vessel|ship name|\bship\b|craft/i, 'vessel'],
   [/work order|job (no|number|order)|\bWO\b|permit no|report no|incident no|consignment no|reference no|ref\.? no/i, 'workorder'],
-  [/\bdate\b|valid (from|to|until)|expiry/i, 'date'],
+  [/\bdate\b|valid (from|to|until)|expiry|(^|[^\p{L}])(дата|число)([^\p{L}]|$)/iu, 'date'],
   [/quantity|\bqty\b|amount|volume|weight|mass|litres|tonnes|hours|headcount|number of/i, 'quantity'],
   [/material|substance|waste type|product/i, 'material'],
-  [/company|supplier|contractor|customer|organisation|organization|yard|employer/i, 'company'],
-  [/authori[sz]ed (person|signatory|by)|signatory|signed by|prepared by|approved by|reviewed by|verified by|reported by|declared by|contact person|responsible person|supervisor|permit issuer|permit holder|assessor|auditor/i, 'signatory'],
+  [/company|supplier|contractor|customer|organisation|organization|yard|employer|организаци|компани|работодател/iu, 'company'],
+  [/authori[sz]ed (person|signatory|by)|signatory|signed by|prepared by|approved by|reviewed by|verified by|reported by|declared by|contact person|responsible person|supervisor|permit issuer|permit holder|assessor|auditor|расшифровк|подписант|ф\.?\s?и\.?\s?о\.?|фамилия/iu, 'signatory'],
 ];
 
 const LABEL_STOP = /^(note|notes|remark|remarks|instruction|instructions|warning|caution|see|e\.?g|tel|fax|http|https|www|page|form|rev|revision|ref|title)$/i;
-const SIGNATURE_RE = /^(signature|signed|signed by|name (and|&) signature|stamp|company stamp|initials)\b/i;
+const SIGNATURE_RE = /^(signature|signed|signed by|name (and|&) signature|stamp|company stamp|initials|подпись|м\.\s?п\.?|печать|tandatangan|签名|签字)(?![\p{L}])/iu;
+/** Caption words under a blank that mean "sign here" (any of the languages the forms come in). */
+export const SIGN_CAPTION_RE = /подпис|signature|\bsign\b|tandatangan|签名|签字/iu;
+const DATE_CAPTION_RE = /дата|date|tarikh|日期/iu;
+/** A line made only of bracketed captions: "(дата)   (подпись)   (расшифровка)". */
+const CAPTION_LINE = /^\s*(?:\([^()]{2,40}\)\s*)+$/u;
 const UNDERSCORES = /_{3,}/;
 const CONDITIONAL_HINT = /\(?\b(if applicable|if yes|only if|where applicable|when applicable|if any)\b\)?/i;
 
@@ -148,8 +159,10 @@ export function isHeading(line: string): boolean {
   const t = line.trim();
   if (!t || t.length > 90 || t.includes(': ')) return false;
   if (HEADING_RE.test(t)) return true;
-  const letters = t.replace(/[^A-Za-z]/g, '');
-  return letters.length >= 3 && letters === letters.toUpperCase() && !isCode(t);
+  const letters = t.replace(/[^\p{L}]/gu, '');
+  // "ИНН        ," or "IMO 9074729" are labels with a value or a gap, not headings
+  if (/\s{3,}|_{3,}|\d{5,}/.test(t) || /^[\p{L}.]{2,6}[\s,.:]*$/u.test(t) && !HEADING_RE.test(t) && letters.length < 4) return false;
+  return letters.length >= 3 && letters === letters.toUpperCase() && letters !== letters.toLowerCase() && !isCode(t);
 }
 
 function headingText(line: string): string {
@@ -191,12 +204,14 @@ export function detectFields(text: string): Detection {
   };
   const cur = () => sec || open('', true);
 
-  const addField = (label: string, value: string, source: string, bare: boolean): Field => {
+  const addField = (label: string, value: string, source: string, bare: boolean, at: Pick<Field, 'anchor' | 'anchorNth' | 'anchorAfter'> = {}): Field => {
     const base = keyFor(label);
     let key = base;
     let i = 2;
     // same label with a different sample → a second field (e.g. two dates)
-    while (byKey.has(key) && byKey.get(key)!.sample !== value.trim() && value.trim() && byKey.get(key)!.sample) key = base + '_' + i++;
+    // same label with a different sample → a second field (e.g. two dates); blanks are always their own field
+    const same = (e: Field) => !!value.trim() && !UNDERSCORES.test(value) && e.sample === value.trim();
+    while (byKey.has(key) && !same(byKey.get(key)!)) key = base + '_' + i++;
     const existing = byKey.get(key);
     if (existing) return existing;
     const t = inferType(label, value);
@@ -205,6 +220,8 @@ export function detectFields(text: string): Detection {
       key, role: t.role, label: label.trim().replace(/\s+/g, ' '), type: t.type, options: t.options,
       confidence: Math.min(99, bare ? Math.max(60, t.confidence - 20) : t.confidence),
       required: !bare, sample: blank ? '' : value.trim(), source,
+      ...(blank && !at.anchor && !at.anchorAfter && UNDERSCORES.test(value) ? { anchor: value.trim() } : {}),
+      ...at,
     };
     fields.push(f);
     byKey.set(key, f);
@@ -212,15 +229,71 @@ export function detectFields(text: string): Detection {
   };
 
   // bare-pattern scan inside prose lines: IMO numbers, work-order codes, dates
-  const scanBare = (line: string): string => {
+  const scanBare = (line: string, src: string = line): string => {
     let out = line;
     if (/^(form|rev|revision)\b/i.test(line)) return out;
     const imo = line.match(IMO_RE);
-    if (imo && imoValid(imo[1])) { const f = addField('IMO number', imo[1], line, true); out = out.replace(imo[0], (imo[0].toLowerCase().startsWith('imo') ? 'IMO ' : '') + '{{' + f.key + '}}'); }
+    if (imo && imoValid(imo[1])) { const f = addField('IMO number', imo[1], src, true); out = out.replace(imo[0], (imo[0].toLowerCase().startsWith('imo') ? 'IMO ' : '') + '{{' + f.key + '}}'); }
     const code = line.match(CODE_RE);
-    if (code && /^(WO|INC|PTW|CN|RA|SWP|JOB|PO|TIW|SDOC|MD)\b/i.test(code[1])) { const f = addField('Work order no.', code[1], line, true); out = out.replace(code[1], '{{' + f.key + '}}'); }
+    if (code && /^(WO|INC|PTW|CN|RA|SWP|JOB|PO|TIW|SDOC|MD)\b/i.test(code[1])) { const f = addField('Work order no.', code[1], src, true); out = out.replace(code[1], '{{' + f.key + '}}'); }
     const d = line.match(DATE_RE);
-    if (d) { const f = addField('Date', d[1], line, true); out = out.replace(d[1], '{{' + f.key + '}}'); }
+    if (d && out.includes(d[1])) { const at = src.indexOf(d[1]); const f = addField(labelAround(src, at < 0 ? 0 : at, (at < 0 ? 0 : at) + d[1].length, true), d[1], src, true); out = out.replace(d[1], '{{' + f.key + '}}'); }
+    return out;
+  };
+
+  // label for a blank from the words around it: "ИНН ____" → ИНН, "от ____" → От кого (ФИО), "с __.10.2026" → Дата
+  const PREP = /^(от|с|со|на|по|до|для|в|к|from|to|for|on|at|by)$/i;
+  const labelAround = (line: string, start: number, end: number, isDate: boolean): string => {
+    const ru = /[а-яё]/i.test(line);
+    const before = line.slice(0, start).replace(/_+/g, ' ').split(/[,;:!?«»()]|\.\s/).pop()!.trim().split(/\s+/).filter(Boolean).slice(-3);
+    const after = line.slice(end).replace(/_+/g, ' ').split(/[,;:!?«»()]|\.\s/)[0].trim().split(/\s+/).filter(Boolean).slice(0, 2);
+    if (isDate) {
+      const p = (before[before.length - 1] || '').toLowerCase();
+      if (/^(с|со|from)$/.test(p)) return ru ? 'Дата начала' : 'Start date';
+      if (/^(по|до|to|until)$/.test(p)) return ru ? 'Дата окончания' : 'End date';
+      return ru ? 'Дата' : 'Date';
+    }
+    if (!before.length || (before.length === 1 && PREP.test(before[0]))) {
+      if (before[0] && /^от$/i.test(before[0])) return 'От кого (ФИО)';
+      if (before[0] && /^from$/i.test(before[0])) return 'From (full name)';
+      const words = [...before, ...after].join(' ').trim();
+      return words || (ru ? 'Поле' : 'Field');
+    }
+    const w = before.join(' ').replace(/[.:]+$/, '');
+    return w.charAt(0).toUpperCase() + w.slice(1);
+  };
+
+  /** Index of the underscore run starting at `at` among all underscore runs of the line (0 = first). */
+  const runIndex = (line: string, at: number) => [...line.matchAll(/_+/g)].findIndex((m) => m.index === at);
+
+  /** Blanks inside a prose line: "_value____" filled in, "________" empty, "__.10.2026" date blank, "ИНН 1234…" / "ИНН     ". */
+  const scanBlanks = (line: string): string => {
+    let out = line;
+    const nth = (anchor: string, at: number) => { let n = 0, k = line.indexOf(anchor); while (k >= 0 && k < at) { n++; k = line.indexOf(anchor, k + 1); } return n; };
+    // ИНН / СНИЛС with digits, or left empty
+    const inn = line.match(/(ИНН|СНИЛС)\s*[:№]?\s*(\d[\d\s-]{9,14}\d)/u);
+    if (inn) { const f = addField(inn[1], inn[2].trim(), line, false); f.type = 'id'; f.role = 'other'; out = out.replace(inn[2].trim(), '{{' + f.key + '}}'); }
+    else { const e = line.match(/(ИНН|СНИЛС)(?=\s{3,}|\s*[,.]?\s*$)/u); if (e) { const f = addField(e[1], '', line, false, { anchorAfter: e[1] }); f.type = 'id'; out = out.replace(e[1], e[1] + ' {{' + f.key + '}}'); } }
+    // value written into a blank: "от _Сидоровой Ольги Павловны_____"
+    for (const m of [...line.matchAll(/_+([^_\n]{2,80}?)_{2,}|_{2,}([^_\n]{2,80}?)_+/gu)]) {
+      const inner = (m[1] ?? m[2] ?? '');
+      // "от _Сидоровой Ольги_____" is a filled-in blank; "____ до ____" is two blanks with a word between them
+      const lr = m[0].length - m[0].replace(/^_+/, '').length, rr = m[0].length - m[0].replace(/_+$/, '').length;
+      const between = /^\s/.test(inner) && /\s$/.test(inner) && lr > 2 && rr > 2 && inner.trim().split(/\s+/).length === 1 && !/\p{Lu}|\d/u.test(inner);
+      if (!/[\p{L}\d]/u.test(inner) || between) continue;
+      const v = inner.trim();
+      const f = addField(labelAround(line, m.index!, m.index! + m[0].length, isDate(v)), v, line, false);
+      out = out.replace(m[0], '{{' + f.key + '}}');
+    }
+    // date blanks
+    const db = out.match(DATE_BLANK_RE);
+    if (db && db[0].includes('_')) { const at = line.indexOf(db[0]); const f = addField(labelAround(line, at, at + db[0].length, true), '', line, false, { anchor: db[0], anchorNth: nth(db[0], at) }); f.type = 'date'; f.role = 'date'; out = out.replace(db[0], '{{' + f.key + '}}'); }
+    // remaining empty blanks
+    for (const m of [...line.matchAll(/_{4,}/g)]) {
+      if (!out.includes(m[0])) continue;
+      const f = addField(labelAround(line, m.index!, m.index! + m[0].length, false), '', line, false, { anchor: m[0], anchorNth: runIndex(line, m.index!) });
+      out = out.replace(m[0], '{{' + f.key + '}}');
+    }
     return out;
   };
 
@@ -247,7 +320,38 @@ export function detectFields(text: string): Detection {
     }
 
     const s = cur();
-    const m = line.match(/^([A-Za-z][^:]{0,70}?)\s*:\s*(.*)$/);
+    // a row of blanks with bracketed captions under it: "____  ____  ____" / "(дата) (подпись) (расшифровка)"
+    let ci = i + 1; while (ci < raw.length && !raw[ci].trim()) ci++;
+    const capLine = (raw[ci] || '').trim();
+    if (capLine && CAPTION_LINE.test(capLine)) {
+      const caps = [...capLine.matchAll(/\(([^()]+)\)/g)].map((c) => c[1].trim());
+      // groups are separated by 2+ spaces or tabs; keep their positions so equal-looking blanks stay apart
+      let groups = [...line.matchAll(/\S+(?: \S+)*/g)].map((g) => ({ text: g[0], at: g.index! }));
+      // a row made only of blanks: one group per underscore run, however they are spaced
+      if (groups.length !== caps.length && /^[_\s]+$/.test(line)) groups = [...line.matchAll(/_+/g)].map((g) => ({ text: g[0], at: g.index! }));
+      if (groups.length === caps.length) {
+        let signed = false;
+        const parts: string[] = []; let last = 0;
+        groups.forEach((g, k) => {
+          const cap = caps[k];
+          parts.push(line.slice(last, g.at)); last = g.at + g.text.length;
+          if (SIGN_CAPTION_RE.test(cap)) { signed = true; parts.push(g.text); return; }
+          const isBlank = /^[_\s.]+$/.test(g.text);
+          const label = /^расшифровка$/i.test(cap) ? 'Расшифровка подписи' : cap.charAt(0).toUpperCase() + cap.slice(1);
+          const f = addField(label, isBlank ? '' : g.text, line, false, isBlank ? { anchor: g.text, anchorNth: runIndex(line, g.at) } : {});
+          if (DATE_CAPTION_RE.test(cap)) { f.type = 'date'; f.role = 'date'; }
+          parts.push('{{' + f.key + '}}');
+        });
+        parts.push(line.slice(last));
+        const text = parts.join('');
+        if (signed) { s.signature = true; signatureBlocks++; }
+        s.lines.push({ kind: 'text', text });
+        s.lines.push({ kind: 'text', text: capLine });
+        i = ci + 1;
+        continue;
+      }
+    }
+    const m = line.match(/^(\p{L}[^:]{0,70}?)\s*:\s*(.*)$/u);
     if (m && m[1].split(/\s+/).length <= 9) {
       const label = m[1].trim();
       const value = m[2].trim();
@@ -259,8 +363,8 @@ export function detectFields(text: string): Detection {
       continue;
     }
 
-    if (UNDERSCORES.test(line) || SIGNATURE_RE.test(line)) { s.signature = true; signatureBlocks++; s.lines.push({ kind: 'text', text: line }); i++; continue; }
-    s.lines.push({ kind: 'text', text: scanBare(line) });
+    if (SIGNATURE_RE.test(line) || (/^[_\s]+$/.test(line) && UNDERSCORES.test(line))) { s.signature = true; signatureBlocks++; s.lines.push({ kind: 'text', text: line }); i++; continue; }
+    s.lines.push({ kind: 'text', text: scanBare(scanBlanks(line), line) });
     i++;
   }
 
@@ -279,6 +383,10 @@ export function detectFields(text: string): Detection {
       conditionalSections++;
     }
   }
+
+  // dates follow the form's own style; a blank date on a Russian form is written 18.10.2026, never "18 Oct 2026"
+  const cyrillic = /[а-яё]/i.test(text);
+  for (const f of fields) if (f.type === 'date') { const st = dateStyle(f); f.fmt = st === 'en' && cyrillic ? 'dot' : st; }
 
   const regime = detectRegime(text);
   const title = sections.find((s) => s.title)?.heading || sections[0]?.heading || 'Untitled form';
@@ -311,4 +419,40 @@ export function lineKeys(lines: Line[]): string[] {
     else for (const m of l.text.matchAll(/\{\{([a-z0-9_]+)\}\}/g)) out.push(m[1]);
   }
   return out;
+}
+
+// ---------------------------------------------------------------------------------------------------------------------
+// Dates in the form's own style: "18 Oct 2026", "18.10.2026" or "18 октября 2026 г."
+// ---------------------------------------------------------------------------------------------------------------------
+export type DateStyle = 'en' | 'dot' | 'ru';
+const EN_MON = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+
+export function dateStyle(f: Pick<Field, 'sample' | 'anchor' | 'source'> & { fmt?: DateStyle }): DateStyle {
+  if (f.fmt) return f.fmt;
+  const s = (f.sample || '') + ' ' + (f.anchor || '');
+  if (/\d{1,2}\.\d{1,2}\.\d{2,4}|_\.|\._/.test(s)) return 'dot';
+  if (new RegExp(RU_MONTHS.join('|'), 'i').test(s)) return 'ru';
+  if (/[а-яё]/i.test(f.source || '')) return 'dot';
+  return 'en';
+}
+
+export function formatDate(ts: number, style: DateStyle): string {
+  const d = new Date(ts);
+  if (style === 'dot') return String(d.getDate()).padStart(2, '0') + '.' + String(d.getMonth() + 1).padStart(2, '0') + '.' + d.getFullYear();
+  if (style === 'ru') return d.getDate() + ' ' + RU_MONTHS[d.getMonth()] + ' ' + d.getFullYear() + ' г.';
+  return d.getDate() + ' ' + EN_MON[d.getMonth()] + ' ' + d.getFullYear();
+}
+
+/** Any of the styles above, or ISO, back to a timestamp (local midnight). */
+export function parseAnyDate(v: string): number | null {
+  const t = v.trim().replace(/[«»]/g, '');
+  let m = t.match(/^(\d{1,2})\s+([A-Za-z]{3})[a-z]*\.?\s+(\d{4})$/);
+  if (m) { const mi = EN_MON.findIndex((x) => x.toLowerCase() === m![2].toLowerCase()); if (mi >= 0) return new Date(+m[3], mi, +m[1]).getTime(); }
+  m = t.match(/^(\d{4})-(\d{2})-(\d{2})$/);
+  if (m) return new Date(+m[1], +m[2] - 1, +m[3]).getTime();
+  m = t.match(/^(\d{1,2})[./](\d{1,2})[./](\d{4})\.?$/);
+  if (m) return new Date(+m[3], +m[2] - 1, +m[1]).getTime();
+  m = t.match(/^(\d{1,2})\s+([а-яё]+)\s+(\d{4})(?:\s*г\.?)?$/i);
+  if (m) { const mi = RU_MONTHS.indexOf(m[2].toLowerCase()); if (mi >= 0) return new Date(+m[3], mi, +m[1]).getTime(); }
+  return null;
 }
