@@ -1,4 +1,4 @@
-import type { Attempt, Certificate, Enrollment, Exercise, Learner, Material } from '../data/types';
+import type { Attempt, Certificate, Enrollment, Exercise, Learner, LearnerLevel, Material } from '../data/types';
 
 const DAY = 86_400_000;
 const QUIZ_TYPES = new Set(['mcq', 'scen', 'audio', 'match', 'seq', 'cards', 'fill']);
@@ -9,36 +9,47 @@ export interface Ctx { learners: Learner[]; materials: Material[]; exercises: Ex
 const clamp = (v: number) => Math.max(0, Math.min(100, Math.round(v)));
 const mean = (xs: number[]) => (xs.length ? xs.reduce((a, b) => a + b, 0) / xs.length : null);
 
-// A module, as learners get it, is its APPROVED tasks only. Drafts and rejected tasks stay in the builder: they are not
-// handed to learners and do not count towards progress, scores, retention or certificates. Attempts on them (e.g. a
-// trainer previewing a draft as a learner) are ignored here until the task is approved. Content-quality functions
-// further down deliberately still see every task and attempt — they judge the content itself.
+// A module, as a learner gets it, is its APPROVED tasks in that learner's PATH: new hires get 'all' + 'new' tasks,
+// experienced staff get 'all' + 'exp' tasks. Drafts, rejected tasks and other-path tasks are not handed to the learner
+// and do not count towards their progress, scores, retention or certificates; attempts on them (e.g. a trainer
+// previewing a draft) are ignored until the task is approved and in the path. Content-quality functions further down
+// deliberately still see every task and attempt — they judge the content itself.
 export const isLive = (e: Exercise) => e.reviewStatus === 'approved';
+export const inPath = (e: Exercise, level: LearnerLevel) => e.level === 'all' || e.level === level;
 
-const liveCache = new WeakMap<Exercise[], Set<string>>();
-function liveIds(ctx: Ctx): Set<string> {
-  let ids = liveCache.get(ctx.exercises);
-  if (!ids) { ids = new Set(ctx.exercises.filter(isLive).map((e) => e.id)); liveCache.set(ctx.exercises, ids); }
-  return ids;
+const levelOf = (ctx: Ctx, learnerId: string): LearnerLevel => ctx.learners.find((l) => l.id === learnerId)?.level ?? 'new';
+
+const liveCache = new WeakMap<Exercise[], Map<string, Exercise>>();
+function liveById(ctx: Ctx): Map<string, Exercise> {
+  let m = liveCache.get(ctx.exercises);
+  if (!m) { m = new Map(ctx.exercises.filter(isLive).map((e) => [e.id, e])); liveCache.set(ctx.exercises, m); }
+  return m;
 }
 
-export function moduleTasks(ctx: Ctx, materialId: string): Exercise[] {
-  return ctx.exercises.filter((e) => e.materialId === materialId && isLive(e));
+/** The tasks a learner gets in a module (approved, in their path). Without a learner: every approved task. */
+export function moduleTasks(ctx: Ctx, materialId: string, learnerId?: string): Exercise[] {
+  const level = learnerId ? levelOf(ctx, learnerId) : null;
+  return ctx.exercises.filter((e) => e.materialId === materialId && isLive(e) && (!level || inPath(e, level)));
 }
 
-/** Attempts that count for learners: only those on approved tasks. */
+/** Attempts that count for learners: on approved tasks in the attempting learner's path. */
 export function liveAttempts(ctx: Ctx): Attempt[] {
-  const ids = liveIds(ctx);
-  return ctx.attempts.filter((a) => ids.has(a.exerciseId));
+  const live = liveById(ctx);
+  return ctx.attempts.filter((a) => { const e = live.get(a.exerciseId); return !!e && inPath(e, levelOf(ctx, a.learnerId)); });
 }
 
 export function attemptsOf(ctx: Ctx, learnerId: string, materialId?: string): Attempt[] {
-  const ids = liveIds(ctx);
-  return ctx.attempts.filter((a) => a.learnerId === learnerId && (!materialId || a.materialId === materialId) && ids.has(a.exerciseId));
+  const live = liveById(ctx);
+  const level = levelOf(ctx, learnerId);
+  return ctx.attempts.filter((a) => {
+    if (a.learnerId !== learnerId || (materialId && a.materialId !== materialId)) return false;
+    const e = live.get(a.exerciseId);
+    return !!e && inPath(e, level);
+  });
 }
 
 export function moduleProgress(ctx: Ctx, learnerId: string, materialId: string): number {
-  const total = moduleTasks(ctx, materialId).length;
+  const total = moduleTasks(ctx, materialId, learnerId).length;
   if (!total) return 0;
   const passed = new Set(attemptsOf(ctx, learnerId, materialId).filter((a) => a.passed).map((a) => a.exerciseId));
   return clamp((passed.size / total) * 100);
@@ -159,7 +170,7 @@ export function moduleRows(ctx: Ctx, learnerId: string): ModuleRow[] {
   return modulesOf(ctx, learnerId).map((m) => {
     const progress = moduleProgress(ctx, learnerId, m.id);
     const score = quizAvg(ctx, learnerId, m.id);
-    const tasks = moduleTasks(ctx, m.id).length;
+    const tasks = moduleTasks(ctx, m.id, learnerId).length;
     const minutes = Math.round(attemptsOf(ctx, learnerId, m.id).reduce((s, a) => s + a.seconds, 0) / 60);
     return { material: m, progress, score, status: progress === 100 ? 'Completed' : progress === 0 ? 'Not started' : 'Ongoing', tasks, minutes };
   });
@@ -200,7 +211,7 @@ export function strongestType(ctx: Ctx, learnerId: string): string { const xs = 
 export function nextUp(ctx: Ctx, learnerId: string): { title: string; why: string } | null {
   const passed = new Set(attemptsOf(ctx, learnerId).filter((a) => a.passed).map((a) => a.exerciseId));
   for (const m of modulesOf(ctx, learnerId)) {
-    const e = moduleTasks(ctx, m.id).find((x) => !passed.has(x.id));
+    const e = moduleTasks(ctx, m.id, learnerId).find((x) => !passed.has(x.id));
     if (e) return { title: TYPE_LABEL[e.type] + ' · ' + e.title, why: 'Next unfinished task in ' + m.short };
   }
   return null;
@@ -354,7 +365,7 @@ export function predictions(ctx: Ctx, learnerId: string): Prediction[] {
 
 export function progressHistory(ctx: Ctx, learnerId: string, days = 14): { label: string; pct: number }[] {
   const mods = modulesOf(ctx, learnerId);
-  const total = mods.reduce((s, m) => s + moduleTasks(ctx, m.id).length, 0);
+  const total = mods.reduce((s, m) => s + moduleTasks(ctx, m.id, learnerId).length, 0);
   const mine = attemptsOf(ctx, learnerId).filter((a) => a.passed && mods.some((m) => m.id === a.materialId));
   const out: { label: string; pct: number }[] = [];
   for (let d = days; d >= 0; d--) {
@@ -370,7 +381,7 @@ export function progressHistory(ctx: Ctx, learnerId: string, days = 14): { label
 // Certificate = every approved task of the module passed. Pending drafts no longer block it (learners never see them);
 // a module with nothing approved yet has nothing to certify.
 export function canIssueCertificate(ctx: Ctx, learnerId: string, materialId: string): boolean {
-  if (!moduleTasks(ctx, materialId).length) return false;
+  if (!moduleTasks(ctx, materialId, learnerId).length) return false;
   return moduleProgress(ctx, learnerId, materialId) >= 100;
 }
 

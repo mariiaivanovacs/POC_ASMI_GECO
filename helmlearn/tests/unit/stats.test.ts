@@ -157,10 +157,12 @@ describe('modules contain approved tasks only', () => {
 
   it('task counts and progress ignore drafts', async () => {
     const { moduleTasks } = await import('../../src/store/stats');
-    const approved = c.exercises.filter((e) => e.materialId === 'hw' && e.reviewStatus === 'approved').length;
-    expect(approved).toBeLessThan(c.exercises.filter((e) => e.materialId === 'hw').length);
-    expect(moduleTasks(c, 'hw')).toHaveLength(approved);
-    expect(moduleRows(c, 'l1').find((r) => r.material.id === 'hw')!.tasks).toBe(approved);
+    const approved = c.exercises.filter((e) => e.materialId === 'hw' && e.reviewStatus === 'approved');
+    expect(approved.length).toBeLessThan(c.exercises.filter((e) => e.materialId === 'hw').length);
+    expect(moduleTasks(c, 'hw')).toHaveLength(approved.length);
+    // l1 is a new hire: approved 'all' + 'new' tasks only
+    const newPath = approved.filter((e) => e.level !== 'exp').length;
+    expect(moduleRows(c, 'l1').find((r) => r.material.id === 'hw')!.tasks).toBe(newPath);
   });
 
   it('passing a draft changes nothing for the learner until the draft is approved', () => {
@@ -186,5 +188,33 @@ describe('modules contain approved tasks only', () => {
       const approvedTitles = c.exercises.filter((e) => e.materialId === m.id && e.reviewStatus === 'approved').map((e) => e.title);
       expect(approvedTitles).toContain(n.title.split(' · ').slice(1).join(' · '));
     }
+  });
+});
+
+describe('learning paths', () => {
+  const c = ctx();
+  const learner = (level: 'new' | 'exp') => c.learners.find((l) => l.level === level && c.enrollments.some((e) => e.learnerId === l.id && e.materialId === 'hw'))!;
+
+  it('new hires get All + New hire tasks, experienced staff get All + Experienced tasks', async () => {
+    const { moduleTasks } = await import('../../src/store/stats');
+    const nh = moduleTasks(c, 'hw', learner('new').id), ex = moduleTasks(c, 'hw', learner('exp').id);
+    expect(nh.every((e) => e.level === 'all' || e.level === 'new')).toBe(true);
+    expect(ex.every((e) => e.level === 'all' || e.level === 'exp')).toBe(true);
+    expect(nh.some((e) => e.level === 'new')).toBe(true);
+    expect(ex.some((e) => e.level === 'exp')).toBe(true);
+  });
+
+  it('passing a task outside your path does not move your progress', () => {
+    const l = learner('new');
+    const expOnly = c.exercises.find((e) => e.materialId === 'hw' && e.reviewStatus === 'approved' && e.level === 'exp')!;
+    const after: Ctx = { ...c, attempts: [...c.attempts, { id: 'x_exp', learnerId: l.id, materialId: 'hw', exerciseId: expOnly.id, type: expOnly.type, score: 100, passed: true, seconds: 60, at: Date.now() }] };
+    expect(moduleRows(after, l.id).find((r) => r.material.id === 'hw')!.progress).toBe(moduleRows(c, l.id).find((r) => r.material.id === 'hw')!.progress);
+  });
+
+  it('changing a task to "All" puts it in both paths', async () => {
+    const { moduleTasks } = await import('../../src/store/stats');
+    const expOnly = c.exercises.find((e) => e.materialId === 'hw' && e.reviewStatus === 'approved' && e.level === 'exp')!;
+    const widened: Ctx = { ...c, exercises: c.exercises.map((e) => (e.id === expOnly.id ? { ...e, level: 'all' as const } : e)) };
+    expect(moduleTasks(widened, 'hw', learner('new').id).length).toBe(moduleTasks(c, 'hw', learner('new').id).length + 1);
   });
 });

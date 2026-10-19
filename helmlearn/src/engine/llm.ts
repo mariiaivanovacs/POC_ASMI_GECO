@@ -31,7 +31,7 @@ const SCHEMA = `{
   }
 }`;
 
-export function buildPrompt(text: string, structure: Structure, translate: boolean): { system: string; user: string } {
+export function buildPrompt(text: string, structure: Structure, translate: boolean, onlyType?: ExType, avoid: string[] = []): { system: string; user: string } {
   const doc = text.length > MAX_DOC_CHARS ? text.slice(0, MAX_DOC_CHARS) + '\n[truncated]' : text;
   const system = 'You are an instructional designer for marine and offshore shipyard safety and technical training. You write short, concrete, practical training tasks for yard workers, strictly grounded in the document you are given. Never invent numbers, thresholds or rules that are not in the document. Answer with a single JSON object and nothing else.';
   const stepList = structure.steps.length ? structure.steps.map((s, i) => (i + 1) + '. ' + s).join('\n') : '(no explicit steps found)';
@@ -49,7 +49,7 @@ Produce training content as JSON with EXACTLY this shape (keys and types must ma
 ${SCHEMA}
 
 Rules:
-- Draft 2 "mcq", 1-2 "seq", 2 "scen", 1-2 "photo", 1 "match", 1 "sign", 1 "cards", 1 "fill" — skip a type only when the document has no material for it. Do not draft audio tasks.
+- ${onlyType ? 'Draft ONLY "' + onlyType + '" tasks: 2 of them (1 if the document only supports one), testing different parts of the document. No other types.' + (avoid.length ? ' Do not repeat these existing tasks: ' + avoid.map((t) => '"' + t + '"').join(', ') + '.' : '') : 'Draft 2 "mcq", 1-2 "seq", 2 "scen", 1-2 "photo", 1 "match", 1 "sign", 1 "cards", 1 "fill" — skip a type only when the document has no material for it. Do not draft audio tasks.'}
 - Each task must test something specific to THIS document (its steps, figures, roles, equipment, hazards) — never generic safety advice that would fit any document.
 - A "seq" must list actions that genuinely happen in that order in the document.
 - Definitions, card meanings, hints and feedback must not add facts the document does not state.
@@ -92,6 +92,9 @@ const isStr = (v: unknown): v is string => typeof v === 'string' && v.trim().len
 const isStrArr = (v: unknown, min: number): v is string[] => Array.isArray(v) && v.length >= min && v.every(isStr);
 const isIdx = (v: unknown, n: number): v is number => Number.isInteger(v) && (v as number) >= 0 && (v as number) < n;
 const isPairs = (v: unknown, min: number): v is [string, string][] => Array.isArray(v) && v.length >= min && v.every((p) => Array.isArray(p) && p.length === 2 && isStr(p[0]) && isStr(p[1]));
+
+/** Validates raw task data for a type (the same rules applied to Qwen's output) and fills optional text defaults. */
+export function toPayload(type: ExType, r: unknown): Payload | null { return payload(type, r); }
 
 function payload(type: ExType, r: unknown): Payload | null {
   if (!r || typeof r !== 'object') return null;
@@ -220,14 +223,18 @@ async function translateInto(lang: 'bm' | 'zh', exercises: Exercise[], signal?: 
   return out;
 }
 
-export async function generateWithQwen(apiKey: string, text: string, structure: Structure, materialId: string, translate: boolean, fallbackWidgets: Widgets, onDrafted?: (count: number) => void): Promise<LLMResult> {
-  const { system, user } = buildPrompt(text, structure, false);
+export async function generateWithQwen(apiKey: string, text: string, structure: Structure, materialId: string, translate: boolean, fallbackWidgets: Widgets, onDrafted?: (count: number) => void, only?: { type: ExType; avoid: string[] }): Promise<LLMResult> {
+  const { system, user } = buildPrompt(text, structure, false, only?.type, only?.avoid);
   // Qwen now and then returns cut-off or malformed JSON; one retry saves the run from dropping to the offline engine.
   let r: LLMResult;
   try { r = parseLLMResponse(await callQwen(apiKey, system, user, undefined, 4500), materialId, fallbackWidgets); }
   catch (e) {
     if (!(e instanceof LLMError) || !/invalid JSON|no usable/.test(e.message)) throw e;
     r = parseLLMResponse(await callQwen(apiKey, system, user, undefined, 4500), materialId, fallbackWidgets);
+  }
+  if (only) {
+    r = { ...r, exercises: r.exercises.filter((e) => e.type === only.type) };
+    if (!r.exercises.length) throw new LLMError('Qwen returned no ' + only.type + ' tasks for this document.');
   }
   onDrafted?.(r.exercises.length);
   if (!translate) return r;
@@ -240,4 +247,12 @@ export async function generateWithQwen(apiKey: string, text: string, structure: 
   if (bm.size) langs.push('bm');
   if (zh.size) langs.push('zh');
   return { ...r, langs };
+}
+
+/** Re-translates one task from its English version (task editor). Throws if neither language came back usable. */
+export async function translateExercise(exercise: Exercise): Promise<{ bm?: Payload; zh?: Payload }> {
+  const [bm, zh] = await Promise.all([translateInto('bm', [exercise]), translateInto('zh', [exercise])]);
+  const out = { bm: bm.get(exercise.id), zh: zh.get(exercise.id) };
+  if (!out.bm && !out.zh) throw new LLMError('Qwen could not translate this task. Check the connection and try again.');
+  return out;
 }

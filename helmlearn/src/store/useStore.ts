@@ -5,6 +5,7 @@ import { seedActivity, seedAudit, seedCertificates, seedLearners, seedMaterials 
 import { extOf, kindOf, normalizeUrl } from '../engine/extract';
 import { generate } from '../engine/generate';
 import { runPipeline } from '../engine/pipeline';
+import { generateWithQwen, LLMError } from '../engine/llm';
 import { buildCertificatePdf, certificateFileName, downloadBytes, verificationCode } from '../engine/certificate';
 import { MATERIAL_COMPLIANCE, regimeById } from '../data/compliance';
 import { canIssueCertificate, quizAvg, type Ctx } from './stats';
@@ -36,7 +37,8 @@ interface State {
   updateExerciseTitle: (id: string, title: string) => void;
   deleteExercise: (id: string) => void;
   moveExercise: (id: string, targetId: string) => void;
-  regenerateType: (materialId: string, type: ExType) => number;
+  regenerateType: (materialId: string, type: ExType) => Promise<{ count: number; kept: number; source: 'qwen' | 'offline'; error: string | null }>;
+  updateExercise: (id: string, patch: { title: string; level: Exercise['level']; i18n: Exercise['i18n'] }) => boolean;
   recordAttempt: (a: Omit<Attempt, 'id' | 'at'>) => void;
   publishModule: (materialId: string, depts: string[]) => number;
   setLang: (lang: Lang) => void;
@@ -206,15 +208,54 @@ export const useStore = create<State>()(
         set({ exercises: next });
       },
 
-      regenerateType: (materialId, type) => {
+      // Replaces the DRAFT/REJECTED generated tasks of one type; approved tasks are kept (they may already be in
+      // learners' modules). Qwen when it is the selected engine (translated like a full run), otherwise offline.
+      regenerateType: async (materialId, type) => {
         const m = get().materials.find((x) => x.id === materialId);
-        if (!m || !m.structure) return 0;
-        const seed = m.seed + Date.now() % 100_000;
-        const r = generate(materialId, m.structure, seed, type);
-        const stamped = r.exercises.map((e) => ({ ...e, id: e.id + '_' + seed.toString(36) }));
-        const kept = get().exercises.filter((e) => !(e.materialId === materialId && e.type === type && e.generated));
-        set({ exercises: [...kept, ...stamped], materials: get().materials.map((x) => (x.id === materialId ? { ...x, seed } : x)) });
-        return stamped.length;
+        if (!m || !m.structure) return { count: 0, kept: 0, source: 'offline', error: 'This material has not been processed.' };
+        const st = get().settings;
+        const replaceable = (e: Exercise) => e.materialId === materialId && e.type === type && e.generated && e.reviewStatus !== 'approved';
+        const kept = get().exercises.filter((e) => e.materialId === materialId && e.type === type && !replaceable(e)).length;
+        const stamp = '_r' + Date.now().toString(36);
+        let fresh: Exercise[] = [];
+        let source: 'qwen' | 'offline' = 'offline';
+        if (st.provider === 'deepseek' && m.text) {
+          try {
+            const avoid = get().exercises.filter((e) => e.materialId === materialId && e.type === type && e.reviewStatus === 'approved').map((e) => e.title);
+            const r = await generateWithQwen(st.apiKey, m.text, m.structure, materialId, st.translate, m.widgets || generate(materialId, m.structure, m.seed).widgets, undefined, { type, avoid });
+            fresh = r.exercises; source = 'qwen';
+          } catch (e) {
+            return { count: 0, kept, source: 'qwen', error: (e instanceof LLMError ? e.message : 'Qwen failed.') + ' Nothing was replaced.' };
+          }
+        } else {
+          const seed = m.seed + Date.now() % 100_000;
+          fresh = generate(materialId, m.structure, seed, type).exercises;
+          set({ materials: get().materials.map((x) => (x.id === materialId ? { ...x, seed } : x)) });
+        }
+        if (!fresh.length) return { count: 0, kept, source, error: 'The text has no source for ' + type + ' tasks. Nothing was replaced.' };
+        const stamped = fresh.map((e) => ({ ...e, id: e.id + stamp }));
+        // New tasks take the place of the ones they replace, so the module order stays put.
+        const list = get().exercises;
+        const at = list.findIndex(replaceable);
+        const rest = list.filter((e) => !replaceable(e));
+        const insertAt = at < 0 ? rest.length : list.slice(0, at).filter((e) => !replaceable(e)).length;
+        set({ exercises: [...rest.slice(0, insertAt), ...stamped, ...rest.slice(insertAt)] });
+        set({ audit: [...get().audit, logAuditEntry(st.reviewerName || 'System', st.reviewerRole, 'exercise_edited', 'material', materialId, 'Regenerated ' + stamped.length + ' ' + type + ' task(s) with ' + (source === 'qwen' ? 'Qwen' : 'the offline engine') + (kept ? '; kept ' + kept + ' approved' : ''))] });
+        return { count: stamped.length, kept, source, error: null };
+      },
+
+      // Saving an edit sends an approved or rejected task back to Draft: changed content must be re-reviewed before
+      // learners get it. Returns false when nothing changed.
+      updateExercise: (id, patch) => {
+        const e = get().exercises.find((x) => x.id === id);
+        if (!e) return false;
+        const title = patch.title.trim() || e.title;
+        if (title === e.title && patch.level === e.level && JSON.stringify(patch.i18n) === JSON.stringify(e.i18n)) return false;
+        const st = get().settings;
+        const wasReviewed = e.reviewStatus !== 'draft';
+        set({ exercises: get().exercises.map((x) => (x.id === id ? { ...x, title, level: patch.level, i18n: patch.i18n, reviewStatus: 'draft', reviewedBy: wasReviewed ? null : x.reviewedBy, reviewedAt: wasReviewed ? null : x.reviewedAt, reviewNote: null } : x)) });
+        set({ audit: [...get().audit, logAuditEntry(st.reviewerName || 'Unnamed reviewer', st.reviewerRole, 'exercise_edited', 'exercise', id, 'Edited "' + title + '"' + (wasReviewed ? ' — was ' + e.reviewStatus + ', back to draft for review' : ''))] });
+        return true;
       },
 
       recordAttempt: (a) => set({ attempts: [...get().attempts, { ...a, id: uid('a'), at: Date.now() }] }),

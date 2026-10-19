@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import { Link, useNavigate, useParams } from 'react-router-dom';
 import type { Exercise, ExType, ReviewerRole } from '../data/types';
-import { exerciseQuality, reviewCoverage, type ExerciseQuality } from '../store/stats';
+import { exerciseQuality, inPath, reviewCoverage, type ExerciseQuality } from '../store/stats';
 import { LANGS, t as T } from '../data/i18n';
 import { ALL_TYPES } from '../engine/generate';
 import { catLabel, useStore } from '../store/useStore';
@@ -11,6 +11,7 @@ import { Avatar } from '../components/ui/Avatar';
 import { Player, type Outcome } from '../components/exercises/Exercises';
 import { celebrate } from '../fx/celebrate';
 import { QualityPill } from '../components/QualityPill';
+import { TaskEditor } from '../components/TaskEditor';
 
 const LEVEL_LABEL: Record<string, string> = { all: 'All', new: 'New hire', exp: 'Experienced' };
 const REVIEWER_ROLES: ReviewerRole[] = ['Trainer', 'HSE Manager', 'Supervisor', 'Auditor'];
@@ -50,6 +51,8 @@ export function TaskBuilder() {
   const [round, setRound] = useState(0);
   const [pendingAction, setPendingAction] = useState<{ id: string; kind: 'approve' | 'reject' } | null>(null);
   const [drag, setDrag] = useState<{ id: string; over: string | null } | null>(null);
+  const [regenerating, setRegenerating] = useState(false);
+  const [editingId, setEditingId] = useState<string | null>(null);
 
   const shown = list.filter((e) => typeFilter === 'all' || (typeFilter === 'needs-review' ? e.reviewStatus === 'draft' : e.type === typeFilter));
   const current = list.find((e) => e.id === selId) || shown[0] || list[0] || null;
@@ -66,8 +69,14 @@ export function TaskBuilder() {
     if (o.passed) celebrate(document.querySelector('[data-testid="phone-body"]') as HTMLElement, { count: 70, power: 950 });
     toast((o.passed ? 'Passed' : 'Attempted') + ' · recorded for ' + learner.name + ' (' + seconds + ' s)', o.passed ? 'ok' : 'info');
   };
-  const next = () => { const i = shown.findIndex((e) => e.id === current?.id); const n = shown[(i + 1) % shown.length]; if (n) setSelId(n.id); };
-  const prev = () => { const i = shown.findIndex((e) => e.id === current?.id); const n = shown[(i - 1 + shown.length) % shown.length]; if (n) setSelId(n.id); };
+  // The phone walks the preview path only (New hire: All + New hire tasks; Experienced: All + Experienced tasks).
+  // The path follows the play-as learner; the toggle lets a trainer preview the other path without switching learner.
+  useEffect(() => { if (learner) setLevel(learner.level); }, [learner?.id]); // eslint-disable-line react-hooks/exhaustive-deps
+  const path = shown.filter((e) => inPath(e, level));
+  const pos = current ? path.findIndex((e) => e.id === current.id) : -1;
+  const step = (d: 1 | -1) => { if (!path.length) return; const n = path[pos < 0 ? 0 : (pos + d + path.length) % path.length]; setSelId(n.id); };
+  const next = () => step(1);
+  const prev = () => step(-1);
 
   const doApprove = (id: string) => approveExercise(id);
   const doReject = (id: string) => { const note = window.prompt('One-line reason this task was rejected (shown in the audit log):', ''); if (note !== null) rejectExercise(id, note); };
@@ -139,13 +148,20 @@ export function TaskBuilder() {
             <div className="row-between" style={{ padding: '0 4px' }}>
               <div className="card-h">Generated tasks <span style={{ color: 'var(--muted)', fontWeight: 500, marginLeft: 4 }}>{shown.length} of {list.length}</span></div>
               <div style={{ display: 'flex', gap: 6 }}>
-                {typeFilter !== 'all' && typeFilter !== 'needs-review' && <button className="btn ai sm" onClick={() => { const n = regenerateType(material.id, typeFilter); toast(n ? n + ' ' + TYPE_LABEL[typeFilter].toLowerCase() + ' task' + (n > 1 ? 's' : '') + ' regenerated' : 'The text has no source for ' + TYPE_LABEL[typeFilter].toLowerCase() + ' tasks', n ? 'ok' : 'err'); }} data-testid="regenerate"><Ic.refresh />Regenerate {TYPE_LABEL[typeFilter].toLowerCase()}</button>}
+                {typeFilter !== 'all' && typeFilter !== 'needs-review' && <button className="btn ai sm" disabled={regenerating} title="Replaces the draft and rejected tasks of this type; approved ones are kept" onClick={async () => {
+                  const label = TYPE_LABEL[typeFilter].toLowerCase();
+                  setRegenerating(true);
+                  const r = await regenerateType(material.id, typeFilter);
+                  setRegenerating(false);
+                  if (r.error) { toast(r.error, 'err'); return; }
+                  toast(r.count + ' new ' + label + ' task' + (r.count > 1 ? 's' : '') + ' drafted by ' + (r.source === 'qwen' ? 'Qwen' : 'the offline engine') + (r.kept ? ' · ' + r.kept + ' approved kept' : ''), 'ok');
+                }} data-testid="regenerate">{regenerating ? <span className="spinner" style={{ borderColor: 'rgba(47,111,224,.3)', borderTopColor: '#2f6fe0' }} /> : <Ic.refresh />}{regenerating ? (settings.provider === 'deepseek' ? 'Qwen is drafting…' : 'Regenerating…') : 'Regenerate ' + TYPE_LABEL[typeFilter].toLowerCase()}</button>}
                 <span style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 11.5, color: 'var(--blue-d)', fontWeight: 600 }}><Ic.grip size={12} />Drag to reorder · edit any title inline</span>
               </div>
             </div>
             <div className="stack" style={{ marginTop: 8, gap: 2, overflow: 'auto', minHeight: 0 }} data-testid="task-list">
               {shown.length === 0 && <div className="empty">{typeFilter === 'needs-review' ? 'Nothing pending — every task in this module has been reviewed.' : 'No tasks of this type — the text gave the engine nothing to build one from.'}</div>}
-              {shown.map((e) => <TaskRow key={e.id} e={e} q={exerciseQuality(ctx, e.id)} selected={current?.id === e.id} onSelect={() => setSelId(e.id)} onTitle={(v) => updateTitle(e.id, v)} onDelete={() => deleteExercise(e.id)} onApprove={() => onApprove(e.id)} onReject={() => onReject(e.id)}
+              {shown.map((e) => <TaskRow key={e.id} e={e} q={exerciseQuality(ctx, e.id)} selected={current?.id === e.id} onSelect={() => setSelId(e.id)} onTitle={(v) => updateTitle(e.id, v)} onDelete={() => deleteExercise(e.id)} onApprove={() => onApprove(e.id)} onReject={() => onReject(e.id)} onEdit={() => { setSelId(e.id); setEditingId(e.id); }}
                 dragging={drag?.id === e.id} dropMark={drag && drag.over === e.id && drag.id !== e.id ? (list.findIndex((x) => x.id === drag.id) < list.findIndex((x) => x.id === e.id) ? 'below' : 'above') : null}
                 onDragStart={() => setDrag({ id: e.id, over: null })} onDragOver={(id) => setDrag((d) => (d && d.over !== id ? { ...d, over: id } : d))}
                 onDrop={() => { if (drag?.over) moveExercise(drag.id, drag.over); setDrag(null); }} />)}
@@ -174,11 +190,12 @@ export function TaskBuilder() {
               </div>
               <div style={{ fontFamily: 'var(--font-h)', fontSize: 16, fontWeight: 700, marginTop: 4 }}>{current ? s.cat[material.category] : '—'}</div>
               <div style={{ marginTop: 10, display: 'flex', alignItems: 'center', gap: 10 }}>
-                <div className="bar" style={{ width: 240, background: 'rgba(255,255,255,.18)' }}><i style={{ width: (current ? ((shown.findIndex((e) => e.id === current.id) + 1) / Math.max(1, shown.length)) * 100 : 0) + '%', background: '#60a5fa' }} /></div>
-                <span style={{ fontSize: 11, color: '#c9d6ea' }}>{s.taskOf} {current ? shown.findIndex((e) => e.id === current.id) + 1 : 0} / {shown.length}</span>
+                <div className="bar" style={{ width: 240, background: 'rgba(255,255,255,.18)' }}><i style={{ width: (pos >= 0 ? ((pos + 1) / Math.max(1, path.length)) * 100 : 0) + '%', background: '#60a5fa' }} /></div>
+                <span style={{ fontSize: 11, color: '#c9d6ea' }} data-testid="phone-pos">{s.taskOf} {pos >= 0 ? pos + 1 : '–'} / {path.length}</span>
               </div>
             </div>
             <div className="phone-body" data-testid="phone-body">
+              {current && !inPath(current, level) && <div className="pill info" style={{ alignSelf: 'flex-start' }} data-testid="preview-other-path">{current.level === 'exp' ? 'Experienced' : 'New hire'} path only — {level === 'new' ? 'new hires' : 'experienced staff'} don't get this task</div>}
               {current && current.reviewStatus !== 'approved' && <div className="pill risk" style={{ alignSelf: 'flex-start' }} data-testid="preview-not-live">{current.reviewStatus === 'rejected' ? 'Rejected' : 'Draft'} · preview only — learners don't get this task</div>}
               {current ? <Player key={current.id + ':' + round + ':' + settings.lang} exercise={current} lang={settings.lang} showHints={level === 'new'} onDone={onDone} pin={settings.pin} /> : <div className="empty">No task selected.</div>}
             </div>
@@ -190,7 +207,8 @@ export function TaskBuilder() {
         </section>
       </div>
 
-      {publishOpen && <PublishModal coverage={coverage} enrolled={enrolled} onClose={() => setPublishOpen(false)} onPublish={(depts) => { const n = publishModule(material.id, depts); toast(n ? n + ' learner' + (n > 1 ? 's' : '') + ' enrolled in ' + material.short : 'Everyone in those departments is already enrolled', n ? 'ok' : 'info'); setPublishOpen(false); }} />}
+      {publishOpen && <PublishModal coverage={coverage} paths={{ new: list.filter((e) => e.reviewStatus === 'approved' && inPath(e, 'new')).length, exp: list.filter((e) => e.reviewStatus === 'approved' && inPath(e, 'exp')).length }} enrolled={enrolled} onClose={() => setPublishOpen(false)} onPublish={(depts) => { const n = publishModule(material.id, depts); toast(n ? n + ' learner' + (n > 1 ? 's' : '') + ' enrolled in ' + material.short : 'Everyone in those departments is already enrolled', n ? 'ok' : 'info'); setPublishOpen(false); }} />}
+      {editingId && list.some((e) => e.id === editingId) && <TaskEditor exercise={list.find((e) => e.id === editingId)!} onClose={() => setEditingId(null)} />}
       {pendingAction && <ReviewerModal onCancel={() => setPendingAction(null)} onConfirm={confirmReviewer} />}
     </>
   );
@@ -198,7 +216,7 @@ export function TaskBuilder() {
 
 interface DragProps { dragging: boolean; dropMark: 'above' | 'below' | null; onDragStart: () => void; onDragOver: (id: string) => void; onDrop: () => void }
 
-function TaskRow({ e, q, selected, onSelect, onTitle, onDelete, onApprove, onReject, dragging, dropMark, onDragStart, onDragOver, onDrop }: { e: Exercise; q: ExerciseQuality; selected: boolean; onSelect: () => void; onTitle: (v: string) => void; onDelete: () => void; onApprove: () => void; onReject: () => void } & DragProps) {
+function TaskRow({ e, q, selected, onSelect, onTitle, onDelete, onApprove, onReject, onEdit, dragging, dropMark, onDragStart, onDragOver, onDrop }: { e: Exercise; q: ExerciseQuality; selected: boolean; onSelect: () => void; onTitle: (v: string) => void; onDelete: () => void; onApprove: () => void; onReject: () => void; onEdit: () => void } & DragProps) {
   const [v, setV] = useState(e.title);
   useEffect(() => setV(e.title), [e.title]);
   const I = TYPE_ICON[e.type];
@@ -226,6 +244,7 @@ function TaskRow({ e, q, selected, onSelect, onTitle, onDelete, onApprove, onRej
           <QualityPill q={q} />
         </span>
         <span className="task-actions">
+          <button className="btn sm" onClick={(ev) => { ev.stopPropagation(); onEdit(); }} data-testid="edit-task"><Ic.sign size={11} />Edit</button>
           {e.reviewStatus !== 'approved' && <button className="btn sm" onClick={(ev) => { ev.stopPropagation(); onApprove(); }} data-testid="approve-task"><Ic.check size={11} />Approve</button>}
           {e.reviewStatus !== 'rejected' && <button className="btn sm" style={{ color: 'var(--red-t)' }} onClick={(ev) => { ev.stopPropagation(); onReject(); }} data-testid="reject-task">Reject</button>}
           <button className="ib" style={{ width: 26, height: 26, borderRadius: 8 }} onClick={(ev) => { ev.stopPropagation(); onDelete(); }} aria-label="Delete task" data-testid="delete-task"><Ic.trash size={12} /></button>
@@ -262,7 +281,7 @@ function ReviewerModal({ onCancel, onConfirm }: { onCancel: () => void; onConfir
   );
 }
 
-function PublishModal({ coverage, enrolled, onClose, onPublish }: { coverage: ReturnType<typeof reviewCoverage>; enrolled: number; onClose: () => void; onPublish: (depts: string[]) => void }) {
+function PublishModal({ coverage, paths, enrolled, onClose, onPublish }: { coverage: ReturnType<typeof reviewCoverage>; paths: { new: number; exp: number }; enrolled: number; onClose: () => void; onPublish: (depts: string[]) => void }) {
   const learners = useStore((s) => s.learners);
   const depts = Array.from(new Set(learners.map((l) => l.dept)));
   const [sel, setSel] = useState<string[]>(depts);
@@ -282,6 +301,12 @@ function PublishModal({ coverage, enrolled, onClose, onPublish }: { coverage: Re
             ? 'Learners get the ' + coverage.approved + ' approved task' + (coverage.approved === 1 ? '' : 's') + '.' + (held ? ' ' + [coverage.draft ? coverage.draft + ' draft' + (coverage.draft === 1 ? '' : 's') : '', coverage.rejected ? coverage.rejected + ' rejected' : ''].filter(Boolean).join(' and ') + ' stay in the builder and join the module only once approved.' : '')
             : 'No approved tasks yet — approve at least one before publishing. Learners never get drafts.'}
         </div>
+        {coverage.approved > 0 && (
+          <div style={{ fontSize: 12, color: 'var(--ink2)', marginTop: 8, lineHeight: 1.5 }} data-testid="publish-paths">
+            New hires get <b>{paths.new}</b> · experienced staff get <b>{paths.exp}</b> (tasks marked All go to both).
+            {(!paths.new || !paths.exp) && <span style={{ color: 'var(--amber-t)', fontWeight: 600 }}> {!paths.new ? 'New hires' : 'Experienced staff'} would get nothing yet.</span>}
+          </div>
+        )}
         <div style={{ display: 'flex', gap: 8, marginTop: 18, justifyContent: 'flex-end' }}>
           <button className="btn" onClick={onClose}>Cancel</button>
           <button className="btn primary" disabled={!canPublish} onClick={() => onPublish(sel)} data-testid="publish-confirm">Enrol {learners.filter((l) => sel.includes(l.dept)).length} learners</button>
