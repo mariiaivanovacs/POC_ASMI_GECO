@@ -2,8 +2,7 @@ import type { ExType, Exercise, Lang, Material, Stage, Structure, Widgets } from
 import { analyze } from './analyze';
 import { extractText, extractUrl, ExtractError } from './extract';
 import { ALL_TYPES, generate } from './generate';
-import { ttsAvailable } from './tts';
-import { generateWithQwen, LLMError } from './llm';
+import { extractWithQwen, generateWithQwen, LLMError } from './llm';
 
 export interface PipelineUpdate { stage: Stage; pct: number; note?: string }
 export interface PipelineResult {
@@ -17,7 +16,6 @@ export const STAGE_LABEL: Record<Stage, string> = {
   reading: 'Reading the document',
   extracting: 'Extracting steps, hazards and PPE',
   drafting: 'Drafting exercises',
-  audio: 'Preparing audio',
   ready: 'Ready',
 };
 
@@ -43,31 +41,67 @@ export async function runPipeline(material: Material, file: File | null, report:
   report({ stage: 'reading', pct: 35, note: pages + ' page' + (pages === 1 ? '' : 's') });
   await tick();
 
-  report({ stage: 'extracting', pct: 40 });
+  // Qwen calls take 10-60 s each; tick the bar and an elapsed-seconds note so the run never looks frozen.
+  const waiting = async <T,>(work: Promise<T>, stage: Stage, from: number, to: number, label: string, expectSec: number): Promise<T> => {
+    const started = Date.now();
+    const timer = setInterval(() => {
+      const sec = Math.round((Date.now() - started) / 1000);
+      const pct = from + Math.round((to - from) * (1 - Math.exp(-sec / expectSec)));
+      report({ stage, pct, note: label + ' · ' + sec + ' s' });
+    }, 1000);
+    try { return await work; } finally { clearInterval(timer); }
+  };
+
+  report({ stage: 'extracting', pct: 38 });
   await tick();
-  const structure = analyze(text!, material.name.replace(/\.[a-z0-9]+$/i, ''));
-  report({ stage: 'extracting', pct: 55, note: structure.steps.length + ' steps · ' + structure.hazards.length + ' hazards · ' + structure.facts.length + ' facts' });
+  let structure = analyze(text!, material.name.replace(/\.[a-z0-9]+$/i, ''));
+  let note: string | null = null;
+  if (opts.provider === 'deepseek') {
+    try {
+      structure = await waiting(extractWithQwen(text!, structure), 'extracting', 38, 52, 'Qwen is reading the procedure', 12);
+    } catch (e) {
+      note = (e instanceof LLMError ? e.message : 'Qwen extraction failed.') + ' Steps and hazards come from the offline analyzer.';
+    }
+  }
+  report({ stage: 'extracting', pct: 55, note: structure.steps.length + ' steps · ' + structure.hazards.length + ' hazards · ' + structure.ppe.length + ' PPE items' });
   await tick();
 
-  report({ stage: 'drafting', pct: 60 });
+  report({ stage: 'drafting', pct: 58 });
   let exercises: Exercise[] = [];
   let missing: ExType[] = [];
   let widgets: Widgets;
   let source: 'local' | 'deepseek' = 'local';
   let langs: Lang[] = ['en'];
-  let note: string | null = null;
   const local = generate(material.id, structure, material.seed);
   if (opts.provider === 'deepseek') {
-    report({ stage: 'drafting', pct: 62, note: 'Asking Qwen to draft exercises' + (opts.translate ? ' in EN, BM and 中文' : '') });
+    let phase = 'Qwen is drafting tasks in English';
+    let from = 58, to = 80, expect = 25;
+    const onDrafted = (n: number) => {
+      if (!opts.translate) return;
+      phase = n + ' tasks drafted · translating to Bahasa Melayu and 中文';
+      from = 80; to = 97; expect = 30;
+    };
+    const started = Date.now();
+    let phaseStart = started;
+    let lastPhase = phase;
+    const timer = setInterval(() => {
+      if (phase !== lastPhase) { lastPhase = phase; phaseStart = Date.now(); }
+      const sec = Math.round((Date.now() - started) / 1000);
+      const inPhase = (Date.now() - phaseStart) / 1000;
+      report({ stage: 'drafting', pct: from + Math.round((to - from) * (1 - Math.exp(-inPhase / expect))), note: phase + ' · ' + sec + ' s' });
+    }, 1000);
     try {
-      const r = await generateWithQwen(opts.apiKey, text!, structure, material.id, opts.translate, local.widgets);
+      const r = await generateWithQwen(opts.apiKey, text!, structure, material.id, opts.translate, local.widgets, onDrafted);
       exercises = r.exercises; widgets = r.widgets; missing = r.missing; langs = r.langs; source = 'deepseek';
-      report({ stage: 'drafting', pct: 88, note: exercises.length + ' drafted by Qwen' });
+      if (opts.translate && langs.length < 3) note = (note ? note + ' ' : '') + 'Translation to ' + (['bm', 'zh'] as Lang[]).filter((l) => !langs.includes(l)).map((l) => (l === 'bm' ? 'Bahasa Melayu' : '中文')).join(' and ') + ' failed — those tasks show in English.';
+      report({ stage: 'drafting', pct: 98, note: exercises.length + ' tasks drafted by Qwen' });
     } catch (e) {
       const msg = e instanceof LLMError ? e.message : 'Qwen failed.';
-      note = msg + ' Used the offline engine instead.';
-      report({ stage: 'drafting', pct: 70, note: note });
+      note = (note ? note + ' ' : '') + msg + ' Used the offline engine instead.';
+      report({ stage: 'drafting', pct: 90, note });
       exercises = local.exercises; widgets = local.widgets; missing = local.missing;
+    } finally {
+      clearInterval(timer);
     }
   } else {
     for (let i = 0; i < ALL_TYPES.length; i++) {
@@ -75,15 +109,13 @@ export async function runPipeline(material: Material, file: File | null, report:
       const r = generate(material.id, structure, material.seed, t);
       exercises.push(...r.exercises);
       if (r.missing.length) missing.push(t);
-      report({ stage: 'drafting', pct: 60 + Math.round(((i + 1) / ALL_TYPES.length) * 28), note: exercises.length + ' drafted' });
+      report({ stage: 'drafting', pct: 58 + Math.round(((i + 1) / ALL_TYPES.length) * 40), note: exercises.length + ' drafted' });
       await tick();
     }
     widgets = local.widgets;
   }
   await tick();
 
-  report({ stage: 'audio', pct: 90, note: ttsAvailable() ? 'Speech synthesis available' : 'No speech synthesis on this device — transcripts only' });
-  await tick();
   report({ stage: 'ready', pct: 100 });
   return { text: text!, pages, ext, kind, structure, exercises, widgets, missing, source, langs, note };
 }

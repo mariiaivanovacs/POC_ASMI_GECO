@@ -78,7 +78,7 @@ function SettingsModal({ onClose }: { onClose: () => void }) {
           <div style={{ fontSize: 11.5, color: 'var(--ink2)', marginTop: 6, lineHeight: 1.45 }}>
             {settings.provider === 'local'
               ? 'Rule-based, runs in the browser, English only. No key, no network.'
-              : 'Qwen drafts all seven task types plus the widgets from the document' + (settings.translate ? ', in English, Bahasa Melayu and 中文.' : '.') + ' Falls back to the offline engine if the call fails.'}
+              : 'Qwen extracts the steps, hazards and PPE, then drafts all eight task types from the document' + (settings.translate ? ', in English, Bahasa Melayu and 中文.' : '.') + ' Falls back to the offline engine if the call fails.'}
           </div>
           {settings.provider === 'deepseek' && (
             <div style={{ marginTop: 10 }}>

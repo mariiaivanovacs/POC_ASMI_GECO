@@ -157,7 +157,7 @@ export function aiNote(ctx: Ctx, learner: Learner): string {
   const la = lastActive(ctx, learner.id);
   const exp = learner.level === 'exp';
   const weakest = weakestType(ctx, learner.id);
-  if (la.days === null) return 'No tasks attempted yet. Suggested: a 5-minute audio version of the first module in ' + learner.lang + ', plus a nudge from ' + learner.sup + '.';
+  if (la.days === null) return 'No tasks attempted yet. Suggested: a 5-minute flashcard round of the first module in ' + learner.lang + ', plus a nudge from ' + learner.sup + '.';
   if (la.days >= 5) return 'Last seen ' + la.label.toLowerCase() + '. Progress is stalling — a short refresher and a reminder from ' + learner.sup + ' are queued.';
   if (q !== null && q < 70) return (exp ? 'Fast-track path, but ' : 'New-hire path in ' + learner.lang + ' with hints on every task. ') + 'Quiz average is ' + q + '% — weakest task type is ' + weakest + '. A remediation set with 3 extra ' + weakest + ' tasks was added before the practical sign-off.';
   if (exp) return 'Fast-track path in ' + learner.lang + ': shorter explanations, no hints. Scores are steady' + (q !== null ? ' at ' + q + '%' : '') + ' — strongest on ' + strongestType(ctx, learner.id) + ' tasks; keep the practical sign-off for this week.';

@@ -5,7 +5,7 @@ import { STAGE_LABEL } from '../engine/pipeline';
 import { CATEGORIES, catLabel, useStore } from '../store/useStore';
 import { Topbar } from '../App';
 import { Ic } from '../components/ui/Icons';
-import { AudioWidget, FillBlank, Flashcards, QaMatch } from '../components/exercises/Widgets';
+import { FillBlank, Flashcards, QaMatch } from '../components/exercises/Widgets';
 
 export function Materials() {
   const materials = useStore((s) => s.materials);
@@ -155,7 +155,7 @@ function Preview({ m, count }: { m: Material; count: number }) {
           <div style={{ fontFamily: 'var(--font-h)', fontSize: 15, fontWeight: 700, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }} data-testid="preview-title">Exercises generated · {m.short}</div>
           <div style={{ fontSize: 12, color: 'var(--ink2)', marginTop: 2 }}>{m.status === 'processed' ? catL + ' · ' + count + ' exercises' + (m.missingTypes.length ? ' · no source in the text for: ' + m.missingTypes.join(', ') : '') + ' · every widget below works' : catL + ' · ' + m.kind}</div>
         </div>
-        <div style={{ display: 'flex', gap: 6, flexShrink: 0 }}><span className="type">Q&amp;A match</span><span className="type">Audio</span><span className="type">Flashcards</span><span className="type">Fill the blank</span></div>
+        <div style={{ display: 'flex', gap: 6, flexShrink: 0 }}><span className="type">Q&amp;A match</span><span className="type">Flashcards</span><span className="type">Fill the blank</span></div>
       </div>
 
       {m.status !== 'processed' || !w ? (
@@ -172,7 +172,6 @@ function Preview({ m, count }: { m: Material; count: number }) {
       ) : (
         <div style={{ flexGrow: 1, minHeight: 0, overflow: 'auto', display: 'flex', flexDirection: 'column', gap: 12, paddingBottom: 4 }}>
           <QaMatch w={w} />
-          <AudioWidget w={w} />
           <Flashcards w={w} />
           <FillBlank w={w} />
           <Link to={'/builder/' + m.id} className="btn primary full" data-testid="open-builder">Open all {count} exercises in the task builder <Ic.arrow /></Link>

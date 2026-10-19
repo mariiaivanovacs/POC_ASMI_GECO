@@ -1,7 +1,8 @@
 import type { ExType, Exercise, Fact, Level, ReviewStatus, Structure, Widgets } from '../data/types';
 import { mulberry32, seededShuffle } from './rng';
 
-export const ALL_TYPES: ExType[] = ['mcq', 'seq', 'scen', 'audio', 'photo', 'match', 'sign', 'cards', 'fill'];
+// Task types the engines generate. 'audio' is no longer generated; older audio tasks still play in the builder.
+export const ALL_TYPES: ExType[] = ['mcq', 'seq', 'scen', 'photo', 'match', 'sign', 'cards', 'fill'];
 
 const DRAFT: { reviewStatus: ReviewStatus; reviewedBy: null; reviewedAt: null; reviewNote: null } = { reviewStatus: 'draft', reviewedBy: null, reviewedAt: null, reviewNote: null };
 
@@ -113,24 +114,6 @@ export function generate(materialId: string, st: Structure, seed: number, onlyTy
         } } },
       });
     });
-  }
-
-  if (want('audio') && st.steps.length >= 2) {
-    const pick = st.steps[Math.min(st.steps.length - 1, 1)];
-    const correct = short(pick, 70);
-    const others = st.steps.filter((s) => s !== pick).slice(0, 2).map((s) => short(s, 70));
-    if (others.length === 2) {
-      const opts = seededShuffle([correct, ...others], rand);
-      out.push({
-        id: id('audio'), materialId, type: 'audio', level: 'all', title: 'Listen: supervisor briefing', sourceRef: title + ' · step 2', stepIndex: 1, generated: true, ...DRAFT,
-        i18n: { en: { type: 'audio', data: {
-          title: 'Listen and answer', body: 'Play the supervisor\'s radio briefing, then choose the instruction it gives.',
-          hint: 'Listen for the action the supervisor asks for.', opts, correct: opts.indexOf(correct),
-          ok: 'Right — that is the instruction in the briefing.', no: 'Listen again — the briefing says: ' + correct + '.',
-          transcript: 'All crew, this is the supervisor. Before you continue: ' + pick.toLowerCase() + '. Confirm on channel 2 when done.',
-        } } },
-      });
-    }
   }
 
   if (want('photo') && st.ppe.length) {

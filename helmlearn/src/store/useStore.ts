@@ -57,7 +57,7 @@ interface State {
   resetDemo: () => void;
 }
 
-const DEFAULT_SETTINGS: Settings = { pin: '1234', lang: 'en', playAs: 'l1', provider: 'local', apiKey: '', translate: true, reviewerName: '', reviewerRole: 'Trainer' };
+const DEFAULT_SETTINGS: Settings = { pin: '1234', lang: 'en', playAs: 'l1', provider: 'deepseek', apiKey: '', translate: true, reviewerName: '', reviewerRole: 'Trainer' };
 const files = new Map<string, File>();
 export const runtimeFiles = files;
 
@@ -301,6 +301,14 @@ export const useStore = create<State>()(
     {
       name: 'helmlearn-v1',
       storage: createJSONStorage(() => safeStorage()),
+      // v1: Qwen became the default engine. Browsers saved before that still say 'local' only because it was the old
+      // default, so switch them over once; a later explicit choice of the offline engine is kept.
+      version: 1,
+      migrate: (persisted, version) => {
+        const p = (persisted || {}) as { settings?: Partial<Settings> };
+        if (version < 1 && p.settings) p.settings = { ...p.settings, provider: 'deepseek' };
+        return p as unknown as State;
+      },
       partialize: (s) => ({ materials: s.materials, exercises: s.exercises, learners: s.learners, attempts: s.attempts, enrollments: s.enrollments, settings: s.settings, seededAt: s.seededAt, refreshers: s.refreshers, reminders: s.reminders, acked: s.acked, audit: s.audit, certificates: s.certificates }),
       // Runs synchronously while zustand computes the state it is about to set, BEFORE React ever
       // renders it — unlike onRehydrateStorage, which fires (and re-renders) one tick too late,

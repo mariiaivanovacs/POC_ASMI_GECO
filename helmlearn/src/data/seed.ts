@@ -170,7 +170,7 @@ interface Profile { progress: number; quiz: number; lastActiveDays: number; modu
 const PROFILES: Record<string, Profile> = {
   l1: { progress: 0.64, quiz: 78, lastActiveDays: 0, modules: ['hw', 'erp'], enrolledDays: 10 },
   l2: { progress: 0.92, quiz: 88, lastActiveDays: 0, modules: ['hw', 'erp', 'rig'], enrolledDays: 16 },
-  l3: { progress: 0.35, quiz: 58, lastActiveDays: 3, modules: ['hw', 'rig'], enrolledDays: 45, stale: { rig: [26, 40] } },
+  l3: { progress: 0.35, quiz: 64, lastActiveDays: 3, modules: ['hw', 'rig'], enrolledDays: 45, stale: { rig: [26, 40] } },
   l4: { progress: 1.0, quiz: 91, lastActiveDays: 1, modules: ['hw', 'erp', 'rig'], enrolledDays: 30 },
   l5: { progress: 1.0, quiz: 96, lastActiveDays: 0, modules: ['hw', 'erp', 'rig'], enrolledDays: 30 },
   l6: { progress: 0.48, quiz: 66, lastActiveDays: 1, modules: ['hw', 'rig'], enrolledDays: 32, stale: { rig: [14, 30] } },

@@ -1,7 +1,7 @@
 export type Lang = 'en' | 'bm' | 'zh';
 export type Category = 'safety' | 'emergency' | 'technical' | 'refresher' | 'advanced';
 export type MaterialStatus = 'queued' | 'processing' | 'processed' | 'failed';
-export type Stage = 'reading' | 'extracting' | 'drafting' | 'audio' | 'ready';
+export type Stage = 'reading' | 'extracting' | 'drafting' | 'ready';
 export type ExType = 'mcq' | 'seq' | 'scen' | 'audio' | 'photo' | 'match' | 'sign' | 'cards' | 'fill';
 export type Level = 'all' | 'new' | 'exp';
 export type LearnerLevel = 'new' | 'exp';

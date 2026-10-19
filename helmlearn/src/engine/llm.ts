@@ -18,7 +18,6 @@ const SCHEMA = `{
       "bm": { ...same keys in Bahasa Melayu... }, "zh": { ...same keys in Simplified Chinese... } },
     { "type": "seq",   "title": "...", "step": 1, "level": "new", "en": { "title": "...", "items": ["step 1","step 2","step 3","step 4"], "hint": "...", "ok": "...", "no": "..." }, "bm": {...}, "zh": {...} },
     { "type": "scen",  "title": "...", "step": 4, "level": "all", "en": { "title": "situation ... what do you do?", "opts": ["...","...","..."], "correct": 0, "ok": "...", "no": "..." }, "bm": {...}, "zh": {...} },
-    { "type": "audio", "title": "...", "step": 2, "level": "all", "en": { "title": "...", "body": "...", "hint": "...", "opts": ["...","...","..."], "correct": 0, "ok": "...", "no": "...", "transcript": "a short spoken radio/PA message, 20-40 words" }, "bm": {...}, "zh": {...} },
     { "type": "photo", "title": "...", "step": null, "level": "all", "en": { "title": "Photo checkpoint", "body": "what to photograph and why", "btn": "Take photo", "done": "what a passing check confirms", "item": "the equipment" }, "bm": {...}, "zh": {...} },
     { "type": "match", "title": "...", "step": null, "level": "new", "en": { "title": "...", "pairs": [["term","meaning"],["term","meaning"],["term","meaning"]], "hint": "...", "done": "..." }, "bm": {...}, "zh": {...} },
     { "type": "sign",  "title": "...", "step": 1, "level": "exp", "en": { "title": "Supervisor sign-off", "body": "...", "items": ["check 1","check 2","check 3"], "pin": "Supervisor PIN", "ready": "..." }, "bm": {...}, "zh": {...} },
@@ -27,7 +26,6 @@ const SCHEMA = `{
   ],
   "widgets": {
     "qaCaption": "...", "qa": [["question","short answer"],["...","..."],["...","..."]],
-    "audioCaption": "...", "audioTranscript": "spoken message 20-40 words", "audio": ["correct action","wrong action","wrong action"], "audioCorrect": 0,
     "cards": [["term","meaning"],["term","meaning"],["term","meaning"]],
     "fill": { "pre": "text before blank 1", "mid": "text between blanks", "post": "text after blank 2", "ans": ["answer 1","answer 2"], "tokens": ["answer 1","answer 2","distractor","distractor"] }
   }
@@ -36,19 +34,26 @@ const SCHEMA = `{
 export function buildPrompt(text: string, structure: Structure, translate: boolean): { system: string; user: string } {
   const doc = text.length > MAX_DOC_CHARS ? text.slice(0, MAX_DOC_CHARS) + '\n[truncated]' : text;
   const system = 'You are an instructional designer for marine and offshore shipyard safety and technical training. You write short, concrete, practical training tasks for yard workers, strictly grounded in the document you are given. Never invent numbers, thresholds or rules that are not in the document. Answer with a single JSON object and nothing else.';
+  const stepList = structure.steps.length ? structure.steps.map((s, i) => (i + 1) + '. ' + s).join('\n') : '(no explicit steps found)';
   const user = `Document title: ${structure.title}
-Numbered steps the document contains: ${structure.steps.length}. Hazards mentioned: ${structure.hazards.map((h) => h.name).join(', ') || 'none detected'}.
+Procedure steps extracted from the document (use these numbers for "step"):
+${stepList}
+Hazards mentioned: ${structure.hazards.map((h) => h.name).join(', ') || 'none detected'}. PPE / equipment: ${structure.ppe.join(', ') || 'none detected'}.
 
 DOCUMENT:
 """
 ${doc}
 """
 
-Produce training content as JSON with EXACTLY this shape (keys and types must match; "step" is the 1-based number of the document step the task tests, or null):
+Produce training content as JSON with EXACTLY this shape (keys and types must match; "step" is the 1-based number from the step list above that the task tests, or null):
 ${SCHEMA}
 
 Rules:
-- Draft 2 "mcq", 1-2 "seq", 2 "scen", 1 "audio", 1-2 "photo", 1 "match", 1 "sign", 1 "cards", 1 "fill" — skip a type only when the document has no material for it.
+- Draft 2 "mcq", 1-2 "seq", 2 "scen", 1-2 "photo", 1 "match", 1 "sign", 1 "cards", 1 "fill" — skip a type only when the document has no material for it. Do not draft audio tasks.
+- Each task must test something specific to THIS document (its steps, figures, roles, equipment, hazards) — never generic safety advice that would fit any document.
+- A "seq" must list actions that genuinely happen in that order in the document.
+- Definitions, card meanings, hints and feedback must not add facts the document does not state.
+- The "title" inside each language block is a short instruction (e.g. "Complete the rule"), never the question sentence with blanks in it.
 - Every correct answer must be verifiable from the document; wrong options must be plausible but clearly wrong for a trained worker.
 - "opts" have exactly one correct index. "seq" items must be in the correct order. "pairs" and "cards" have 3 pairs. In "fill", both "ans" values must appear in "tokens" and the sentence must read naturally with them in place.
 - ${translate ? 'Provide "bm" (Bahasa Melayu) and "zh" (Simplified Chinese) versions of every exercise with identical structure and the same correct indexes.' : 'Provide only "en"; omit "bm" and "zh".'}
@@ -154,6 +159,42 @@ export function parseLLMResponse(content: string, materialId: string, fallbackWi
   return { exercises, widgets, langs: Array.from(langsSeen), missing };
 }
 
+// Stage 2: Qwen reads the document and pulls out its procedure steps, hazards, PPE and key terms. The rule-based
+// analyzer only finds steps in numbered lists and hazards from a fixed keyword list, so prose SOPs and manuals came out
+// near-empty. The regex result is the fallback, and its sentences/facts are kept (the offline widgets use them).
+export async function extractWithQwen(text: string, fallback: Structure): Promise<Structure> {
+  const doc = text.length > MAX_DOC_CHARS ? text.slice(0, MAX_DOC_CHARS) + '\n[truncated]' : text;
+  const system = 'You extract the structure of marine and offshore safety and technical documents for a training team. Use only what the document says. Answer with a single JSON object and nothing else.';
+  const user = `DOCUMENT:\n"""\n${doc}\n"""\n\nReturn JSON with exactly these keys:
+{"title": "the document's own title",
+ "steps": ["the procedure actions in the order the document gives them, one short imperative sentence each, 3-12 items"],
+ "hazards": [{"name": "short hazard name, 1-4 words", "sentence": "the document sentence that describes it"}],
+ "ppe": ["each piece of PPE or safety equipment the document requires, 1-4 words each"],
+ "terms": [["term or abbreviation the document defines or relies on", "its meaning per the document, under 15 words"]]}
+If the document has no explicit numbered procedure, derive the steps from the actions it tells the reader to take. Each step must say the same thing as the document: keep WHO does it and on whose signal or instruction, and never merge two roles into one step. Keep figures, units and codes exactly as written. Use [] for anything the document does not contain.`;
+  const content = await callQwen('', system, user, undefined, 2500);
+  let root: Raw;
+  try { root = JSON.parse(content.trim().replace(/^```(?:json)?\s*/i, '').replace(/```\s*$/, '')) as Raw; }
+  catch { throw new LLMError('Qwen answered the extraction with invalid JSON.'); }
+  const steps = isStrArr(root.steps, 1) ? (root.steps as string[]).slice(0, 12).map((s) => s.trim().replace(/\.$/, '')) : [];
+  const hazards = Array.isArray(root.hazards)
+    ? (root.hazards as Raw[]).filter((h) => h && isStr(h.name)).slice(0, 10).map((h) => ({ name: (h.name as string).trim(), sentence: isStr(h.sentence) ? h.sentence : '' }))
+    : [];
+  const ppe = Array.isArray(root.ppe) ? (root.ppe as unknown[]).filter(isStr).slice(0, 14).map((p) => p.trim()) : [];
+  const terms = Array.isArray(root.terms)
+    ? (root.terms as unknown[]).filter((t): t is [string, string] => Array.isArray(t) && isStr(t[0]) && isStr(t[1])).slice(0, 10).map(([term, def]) => ({ term: term.trim(), def: def.trim() }))
+    : [];
+  if (!steps.length && !hazards.length) throw new LLMError('Qwen found no steps or hazards in the document.');
+  return {
+    ...fallback,
+    title: isStr(root.title) ? root.title.trim() : fallback.title,
+    steps: steps.length ? steps : fallback.steps,
+    hazards: hazards.length ? hazards : fallback.hazards,
+    ppe: ppe.length ? ppe : fallback.ppe,
+    terms: terms.length >= 3 ? terms : fallback.terms,
+  };
+}
+
 const LANG_NAME: Record<'bm' | 'zh', string> = { bm: 'Bahasa Melayu', zh: 'Simplified Chinese' };
 
 // Translating is a separate, parallel pass: the English draft returns in ~20-30 s and a slow or failed translation
@@ -179,10 +220,16 @@ async function translateInto(lang: 'bm' | 'zh', exercises: Exercise[], signal?: 
   return out;
 }
 
-export async function generateWithQwen(apiKey: string, text: string, structure: Structure, materialId: string, translate: boolean, fallbackWidgets: Widgets): Promise<LLMResult> {
+export async function generateWithQwen(apiKey: string, text: string, structure: Structure, materialId: string, translate: boolean, fallbackWidgets: Widgets, onDrafted?: (count: number) => void): Promise<LLMResult> {
   const { system, user } = buildPrompt(text, structure, false);
-  const content = await callQwen(apiKey, system, user, undefined, 3500);
-  const r = parseLLMResponse(content, materialId, fallbackWidgets);
+  // Qwen now and then returns cut-off or malformed JSON; one retry saves the run from dropping to the offline engine.
+  let r: LLMResult;
+  try { r = parseLLMResponse(await callQwen(apiKey, system, user, undefined, 4500), materialId, fallbackWidgets); }
+  catch (e) {
+    if (!(e instanceof LLMError) || !/invalid JSON|no usable/.test(e.message)) throw e;
+    r = parseLLMResponse(await callQwen(apiKey, system, user, undefined, 4500), materialId, fallbackWidgets);
+  }
+  onDrafted?.(r.exercises.length);
   if (!translate) return r;
   const [bm, zh] = await Promise.all([translateInto('bm', r.exercises), translateInto('zh', r.exercises)]);
   for (const e of r.exercises) {

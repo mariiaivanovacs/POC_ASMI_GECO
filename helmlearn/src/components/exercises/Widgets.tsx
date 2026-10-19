@@ -1,11 +1,7 @@
-import { useEffect, useRef, useState } from 'react';
+import { useEffect, useState } from 'react';
 import type { Widgets } from '../../data/types';
-import { estimateSeconds, speak, stopSpeaking, ttsAvailable } from '../../engine/tts';
-import { Waveform } from '../charts/Charts';
 import { Ic } from '../ui/Icons';
 import { celebrate } from '../../fx/celebrate';
-
-const LETTERS = ['A', 'B', 'C'];
 
 export function QaMatch({ w }: { w: Widgets }) {
   const order = [2, 0, 1].filter((i) => i < w.qa.length);
@@ -23,46 +19,6 @@ export function QaMatch({ w }: { w: Widgets }) {
         <div className="stack">{w.qa.map((p, i) => <button key={i} className={'qa' + (done.includes(i) ? ' done' : pick === i ? ' on' : '')} onClick={() => !done.includes(i) && setPick(i)} data-testid="qa-q">{p[0]}</button>)}</div>
         <div className="stack">{order.map((i) => <button key={i} className={'qa' + (done.includes(i) ? ' done' : wrong === i ? ' wrong' : '')} onClick={(e) => { if (done.includes(i) || pick === null) return; if (pick === i) { const next = [...done, i]; setDone(next); setPick(null); setWrong(null); celebrate(e.currentTarget, { count: next.length === w.qa.length ? 80 : 28, power: next.length === w.qa.length ? 1000 : 600 }); } else { setWrong(i); setTimeout(() => setWrong(null), 600); } }} data-testid="qa-a">{w.qa[i][1]}</button>)}</div>
       </div>
-    </div>
-  );
-}
-
-export function AudioWidget({ w }: { w: Widgets }) {
-  const [playing, setPlaying] = useState(false);
-  const [progress, setProgress] = useState(0);
-  const [picked, setPicked] = useState<number | null>(null);
-  const timer = useRef<number | null>(null);
-  const total = estimateSeconds(w.audioTranscript);
-  const stop = () => { stopSpeaking(); setPlaying(false); if (timer.current) window.clearInterval(timer.current); timer.current = null; };
-  useEffect(() => { setPicked(null); setProgress(0); stop(); }, [w]); // eslint-disable-line react-hooks/exhaustive-deps
-  useEffect(() => () => stop(), []); // eslint-disable-line react-hooks/exhaustive-deps
-  const toggle = () => {
-    if (playing) { stop(); return; }
-    setPlaying(true); setProgress(0);
-    const started = Date.now();
-    timer.current = window.setInterval(() => setProgress(Math.min(1, (Date.now() - started) / (total * 1000))), 200);
-    speak(w.audioTranscript, 'en', () => { stop(); setProgress(1); });
-  };
-  const mmss = (sec: number) => Math.floor(sec / 60) + ':' + String(Math.round(sec % 60)).padStart(2, '0');
-  return (
-    <div className="card" style={{ padding: '16px 18px' }} data-testid="widget-audio">
-      <div className="row-between">
-        <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}><span className="type"><Ic.audio size={12} />Audio · listen &amp; answer</span><span style={{ fontSize: 12.5, color: 'var(--ink2)' }}>{w.audioCaption}</span></div>
-        <span style={{ fontSize: 11.5, color: 'var(--muted)', fontWeight: 600 }}>{mmss(progress * total)} / {mmss(total)}</span>
-      </div>
-      <div className="audiobox" style={{ marginTop: 12 }}>
-        <button className="play" onClick={toggle} aria-label={playing ? 'Pause' : 'Play'} data-testid="widget-play">{playing ? <Ic.pause /> : <Ic.play />}</button>
-        <Waveform playing={playing} progress={progress} />
-      </div>
-      {!ttsAvailable() && <div className="fb no" style={{ marginTop: 10 }}>Audio playback is not available on this device — transcript: “{w.audioTranscript}”</div>}
-      <div className="grid3" style={{ marginTop: 12 }}>
-        {w.audio.map((o, i) => {
-          let cls = 'opt';
-          if (picked !== null) { if (i === w.audioCorrect) cls += ' right'; else if (i === picked) cls += ' wrong'; }
-          return <button key={i} className={cls} style={{ fontSize: 12.5, padding: '8px 12px', minHeight: 40 }} onClick={(e) => { if (picked !== null) return; setPicked(i); if (i === w.audioCorrect) celebrate(e.currentTarget, { count: 40, power: 750 }); }} data-testid="widget-audio-opt"><span className="letter" style={{ width: 22, height: 22 }}>{LETTERS[i]}</span><span>{o}</span></button>;
-        })}
-      </div>
-      {picked !== null && <div style={{ fontSize: 11.5, color: 'var(--ink2)', marginTop: 10, lineHeight: 1.45 }}><b>Transcript:</b> “{w.audioTranscript}”</div>}
     </div>
   );
 }
