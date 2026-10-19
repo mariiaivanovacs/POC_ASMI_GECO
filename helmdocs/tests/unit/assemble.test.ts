@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { assemble, docFileName, evaluateRule, missingMandatory, precheck, signatoryOk } from '../../src/engine/assemble';
+import { assemble, docFileName, evaluateRule, missingMandatory, precheck } from '../../src/engine/assemble';
 import { sampleValues } from '../../src/engine/template';
 import { DEFAULT_SETTINGS, seedTemplates } from '../../src/data/seed';
 
@@ -39,20 +39,12 @@ describe('pre-submission checks', () => {
   it('all pass on a complete declaration', () => {
     const c = precheck(ihm, full(), sig);
     expect(c.every((x) => x.ok)).toBe(true);
-    expect(c.map((x) => x.id)).toEqual(['mandatory', 'imo', 'signatory', 'qty_s4', 'regime']);
+    expect(c.map((x) => x.id)).toEqual(['mandatory', 'qty_s4', 'regime']);
   });
-  it('invalid IMO checksum fails only the IMO check', () => {
-    const c = precheck(ihm, { ...full(), imo_no: '9876544' }, sig);
-    expect(c.find((x) => x.id === 'imo')!.ok).toBe(false);
-    expect(c.find((x) => x.id === 'mandatory')!.ok).toBe(true);
-  });
-  it('an unauthorised signatory is named', () => {
-    const c = precheck(ihm, { ...full(), auth_person: 'Nobody Here, Intern' }, sig);
-    const s = c.find((x) => x.id === 'signatory')!;
-    expect(s.ok).toBe(false);
-    expect(s.detail).toContain('Nobody Here');
-    expect(signatoryOk('rachel tan', sig)).toBe(true);
-    expect(signatoryOk('', sig)).toBe(false);
+  it('no IMO check-digit or signatory-list checks: any IMO and any signer pass', () => {
+    const c = precheck(ihm, { ...full(), imo_no: '4444444', auth_person: 'Nobody Here, Intern' }, sig);
+    expect(c.some((x) => x.id === 'imo' || x.id === 'signatory')).toBe(false);
+    expect(c.every((x) => x.ok)).toBe(true);
   });
   it('quantity is required only while the hazardous section is included', () => {
     const missingQty = precheck(ihm, { ...full(), qty: '' }, sig);

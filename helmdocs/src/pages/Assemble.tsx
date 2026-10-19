@@ -2,9 +2,9 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import { Link, useNavigate, useParams } from 'react-router-dom';
 import type { AggFn, Attachment, Binding, Doc, Field, Section, Template } from '../data/types';
 import { COMPANY } from '../data/seed';
-import { assemble, evaluateRule, missingMandatory, precheck, ruleText, signatoryOk } from '../engine/assemble';
+import { assemble, evaluateRule, missingMandatory, precheck, ruleText } from '../engine/assemble';
 import { buildDocx, buildHtml, buildPdf, mailtoUrl, saveBlob } from '../engine/export';
-import { dateStyle, formatDate, imoValid, lineKeys, parseAnyDate } from '../engine/fields';
+import { dateStyle, formatDate, lineKeys, parseAnyDate } from '../engine/fields';
 import { aiAvailable, draftField, reviewDocument, type Finding } from '../engine/llm';
 import { AGG_FNS, AGG_LABEL, aggregate, numericColumns } from '../engine/data';
 import { shortHash, verifySeal } from '../engine/signature';
@@ -349,9 +349,7 @@ function FormFields({ aiOn, template, doc, values, latestWo, signatories, locked
   );
 }
 
-function hintFor(f: Field, value: string, doc: Doc, latest: Doc | undefined, signatories: string[] | null): { text: string; kind: 'ai' | 'ok' | 'bad' } | null {
-  if (f.role === 'imo' && value) return imoValid(value) ? { text: 'Checksum valid', kind: 'ok' } : { text: 'Checksum invalid — 7 digits, weighted sum must match the last digit', kind: 'bad' };
-  if (f.role === 'signatory' && value && signatories) return signatoryOk(value, signatories) ? { text: 'On the authorised-signatory list', kind: 'ok' } : { text: 'Not on the authorised-signatory list (Settings)', kind: 'bad' };
+function hintFor(f: Field, value: string, doc: Doc, latest: Doc | undefined, _signatories: string[] | null): { text: string; kind: 'ai' | 'ok' | 'bad' } | null {
   if ((f.role === 'vessel' || f.role === 'workorder' || f.role === 'imo') && value && latest && !doc.seeded && (latest.vessel === value || Object.values(latest.values).includes(value))) {
     const wo = Object.entries(latest.values).find(([k]) => k === 'work_order_no')?.[1];
     return { text: 'Pre-filled from ' + (wo || latest.name), kind: 'ai' };

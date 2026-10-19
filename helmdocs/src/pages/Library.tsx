@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import type { Doc, DocStatus } from '../data/types';
 import { saveBlob, toCsv, toTsv, toXlsx, toXml } from '../engine/export';
@@ -10,6 +10,7 @@ import { Ic, regimeColor, regimeIcon } from '../components/ui/Icons';
 import { DayBars, RegimeBars, StatusDonut, WeekBars } from '../components/charts/Charts';
 import { RemindersPanel } from '../components/Reminders';
 import { computeReminders } from '../engine/reminders';
+import { aiAvailable, askLibrary } from '../engine/llm';
 
 type SortKey = 'date' | 'name' | 'template' | 'vessel' | 'status' | 'minutes';
 const STATUS_LABEL: Record<DocStatus, string> = { draft: 'Draft', reviewed: 'Reviewed', sent: 'Sent' };
@@ -68,6 +69,31 @@ export function Library() {
   const rulesAll = useStore((s) => s.settings.deadlines);
   const result = useMemo(() => search(docs, query, 20, { templates: templatesAll, rules: rulesAll }), [docs, query, templatesAll, rulesAll]);
   const sugg = useMemo(() => suggestions(docs), [docs]);
+
+  // Qwen answers plain-language questions about the library; keyword search stays as the instant first pass
+  const [aiOn, setAiOn] = useState(false);
+  const [ai, setAi] = useState<{ q: string; answer: string; ids: string[] } | null>(null);
+  const [asking, setAsking] = useState<string | null>(null);
+  const [aiErr, setAiErr] = useState<string | null>(null);
+  const lastAsked = useRef('');
+  useEffect(() => { void aiAvailable().then(setAiOn); }, []);
+  const ask = async (q: string) => {
+    const question = q.trim();
+    if (!question || !aiOn || asking) return;
+    lastAsked.current = question; setAsking(question); setAiErr(null);
+    try { const r = await askLibrary(question, docs, templatesAll, rulesAll); setAi({ q: question, answer: r.answer, ids: r.docIds }); }
+    catch (e) { setAiErr((e instanceof Error ? e.message : 'Qwen failed.') + ' Showing keyword results instead.'); }
+    finally { setAsking(null); }
+  };
+  // a question the keywords cannot answer goes to Qwen by itself after a short pause
+  useEffect(() => {
+    const q = query.trim();
+    if (!aiOn || q.length < 3 || result.hits.length > 0 || q === lastAsked.current) return;
+    const t = setTimeout(() => void ask(q), 1100);
+    return () => clearTimeout(t);
+  }, [query, aiOn, result.hits.length]); // eslint-disable-line react-hooks/exhaustive-deps
+  const aiNow = ai && ai.q === query.trim() ? ai : null;
+  const aiHits = aiNow ? aiNow.ids.map((id) => docs.find((d) => d.id === id)).filter((d): d is Doc => !!d) : [];
 
   return (
     <>
@@ -201,13 +227,37 @@ export function Library() {
           </div>
           <div className="search" style={{ width: '100%', marginTop: 12 }}>
             <Ic.search />
-            <input placeholder="Ask by vessel, work order, regime or status…" value={query} onChange={(e) => setQuery(e.target.value)} aria-label="Ask the assistant" data-testid="assistant-input" />
+            <input placeholder={aiOn ? 'Ask anything — “what is overdue?”, “how many permits this month?”' : 'Ask by vessel, work order, regime or status…'} value={query} onChange={(e) => setQuery(e.target.value)} onKeyDown={(e) => { if (e.key === 'Enter') void ask(query); }} aria-label="Ask the assistant" data-testid="assistant-input" />
             {query && <button className="ib" style={{ width: 24, height: 24, borderRadius: 7 }} onClick={() => setQuery('')} aria-label="Clear"><Ic.x size={10} /></button>}
           </div>
+          {aiOn && query.trim().length >= 2 && (
+            <button className="btn sm ai" style={{ marginTop: 8, alignSelf: 'flex-start' }} onClick={() => void ask(query)} disabled={!!asking} data-testid="ask-qwen">{asking ? <><span className="spinner" />Qwen is reading the library…</> : <><Ic.spark size={12} />Ask Qwen</>}</button>
+          )}
+          {aiErr && query.trim() && <div style={{ marginTop: 8, fontSize: 11.5, color: 'var(--amber-t)' }} data-testid="ai-error">{aiErr}</div>}
+          {aiNow && (
+            <div style={{ marginTop: 10 }} data-testid="ai-answer">
+              <div style={{ padding: '10px 12px', borderRadius: 10, background: 'rgba(143,125,255,.12)', border: '1px solid rgba(143,125,255,.35)', fontSize: 12.5, lineHeight: 1.5 }}>
+                <div style={{ fontSize: 10.5, fontWeight: 700, color: 'var(--purple-t)', marginBottom: 4, display: 'flex', alignItems: 'center', gap: 5 }}><Ic.spark size={11} />Qwen · answered from this library only</div>
+                {aiNow.answer}
+              </div>
+              {aiHits.length > 0 && <div className="stack" style={{ marginTop: 8, overflow: 'auto', maxHeight: 300, flexShrink: 0 }} data-testid="ai-results">
+                {aiHits.map((d) => { const I = regimeIcon(d.regimeShort); return (
+                  <button key={d.id} className="res" onClick={() => nav('/assemble/' + d.id)} data-testid="ai-hit">
+                    <span style={{ width: 28, height: 28, borderRadius: 7, background: regimeColor(d.regimeShort), color: '#0c1517', display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}><I size={14} /></span>
+                    <div style={{ minWidth: 0, flexGrow: 1 }}>
+                      <div style={{ fontFamily: 'var(--font-m)', fontSize: 11, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{d.name}</div>
+                      <div style={{ fontSize: 11, color: 'var(--ink2)', marginTop: 2 }}>{d.templateName} · {d.vessel}</div>
+                      <span className={'pill ' + d.status} style={{ padding: '2px 8px', marginTop: 5, display: 'inline-flex' }}>{STATUS_LABEL[d.status]}</span>
+                    </div>
+                  </button>
+                ); })}
+              </div>}
+            </div>
+          )}
           <div style={{ marginTop: 8, display: 'flex', flexWrap: 'wrap', gap: 6 }}>
             {sugg.map((s) => <button key={s} className="sug" onClick={() => setQuery(s)} data-testid="suggestion">{s}</button>)}
           </div>
-          {result.tokens.length > 0 && (
+          {result.tokens.length > 0 && !aiNow && !(asking && asking === query.trim()) && (
             <>
               <div style={{ marginTop: 12, padding: '9px 11px', borderRadius: 10, background: 'rgba(143,125,255,.08)', border: '1px solid rgba(143,125,255,.2)', fontSize: 12, color: '#d3dedb', lineHeight: 1.45 }} data-testid="assistant-answer">
                 {!result.hits.length && result.filters.length ? 'No documents are ' + result.filters.join(' and ') + (result.words.length ? ' for “' + result.words.join(' ') + '”' : '') + ' right now.'

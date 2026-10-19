@@ -1,6 +1,8 @@
-import type { Field, FieldType, Section, Template } from '../data/types';
+import type { DeadlineRule, Doc, Field, FieldType, Section, Template } from '../data/types';
+import { calendarEntries } from './reminders';
+import { verifySeal } from './signature';
 import { TYPES, type Detection } from './fields';
-import { assemble, precheck, type Check } from './assemble';
+import { assemble, missingMandatory, precheck, type Check } from './assemble';
 import { addFieldFromSelection, fieldByKey, renameField, retypeField } from './template';
 
 // Qwen (DashScope) via the server-side relay in vite.config.ts: /api/qwen/chat/completions. The relay holds the API key;
@@ -153,4 +155,49 @@ Write the entry for "${field.label}" in 1-3 sentences, consistent with the facts
   const out = (await callQwen(system, user, 300, false, 45_000)).trim().replace(/^["“]|["”]$/g, '');
   if (!out) throw new LLMError('Qwen returned an empty draft.');
   return out;
+}
+
+// ---------------------------------------------------------------------------------------------------------------------
+// 4 · Library assistant: answer a plain-language question about the company's documents
+// ---------------------------------------------------------------------------------------------------------------------
+
+export interface LibraryAnswer { answer: string; docIds: string[] }
+
+/** One compact line of facts per document — what Qwen is allowed to answer from. */
+export function libraryFacts(docs: Doc[], templates: Template[], rules: DeadlineRule[], now = Date.now()) {
+  const cal = new Map(calendarEntries(docs, rules, now).map((e) => [e.doc.id, e]));
+  const day = (t: number | null | undefined) => (t ? new Date(t).toISOString().slice(0, 10) : null);
+  return [...docs].sort((a, b) => b.createdAt - a.createdAt).slice(0, 80).map((d) => {
+    const t = templates.find((x) => x.id === d.templateId) || null;
+    const e = cal.get(d.id);
+    const values = Object.fromEntries(Object.entries(d.values).filter(([, v]) => v && v.length <= 80).slice(0, 12));
+    return {
+      id: d.id, file: d.name, template: d.templateName, regime: d.regimeShort, vessel_or_site: d.vessel, status: d.status === 'sent' ? 'submitted' : d.status,
+      created: day(d.createdAt), submitted: day(d.sentAt), due: day(e?.due), deadline_state: e?.state, days_late: e?.daysLate || undefined,
+      signed: !!d.signature && verifySeal(t, d) === 'valid', signed_by: d.signature?.signer, prepared_by: d.by,
+      missing: t ? missingMandatory(t, d.values).map((f) => f.label) : [], values,
+    };
+  });
+}
+
+export async function askLibrary(question: string, docs: Doc[], templates: Template[], rules: DeadlineRule[]): Promise<LibraryAnswer> {
+  const facts = libraryFacts(docs, templates, rules);
+  const today = new Date().toISOString().slice(0, 10);
+  const totals = { documents: docs.length, draft: docs.filter((d) => d.status === 'draft').length, reviewed: docs.filter((d) => d.status === 'reviewed').length, submitted: docs.filter((d) => d.status === 'sent').length, templates: templates.length };
+  const system = 'You are the document assistant of a marine & offshore company\'s compliance library. You answer questions about the documents listed in the data, and nothing else. Answer with a single JSON object and nothing else.';
+  const user = `Today is ${today}. Library totals: ${JSON.stringify(totals)}.
+Documents (deadline_state: overdue | today | soon = due within 7 days | later | ontime = submitted on time | late = submitted after the due date):
+${JSON.stringify(facts)}
+
+Question: """${question.slice(0, 500)}"""
+
+Return {"answer": "...", "doc_ids": ["..."]}.
+- "answer": 1-3 short sentences in the SAME LANGUAGE as the question, using only the data above (counts, dates, names, what is missing). Be specific (numbers, dates, vessel names). For a greeting or small talk, answer briefly and say what you can help with.
+- "doc_ids": ids of the documents the answer is about, most relevant first (max 12); [] if it is not about specific documents.
+- Never invent documents, values or regulations that are not in the data.`;
+  const root = parseJson(await callQwen(system, user, 600, true, 45_000));
+  const known = new Set(docs.map((d) => d.id));
+  const ids = Array.isArray(root.doc_ids) ? (root.doc_ids as unknown[]).filter((x): x is string => typeof x === 'string' && known.has(x)).slice(0, 12) : [];
+  if (!isStr(root.answer)) throw new LLMError('Qwen returned no answer.');
+  return { answer: String(root.answer).trim(), docIds: ids };
 }
