@@ -161,9 +161,21 @@ Write the entry for "${field.label}" in 1-3 sentences, consistent with the facts
 // 4 · Library assistant: answer a plain-language question about the company's documents
 // ---------------------------------------------------------------------------------------------------------------------
 
-export interface LibraryAnswer { answer: string; docIds: string[] }
+/** view = which cards the page shows under the answer: deadline cards, document cards, both, or none (counts, greetings). */
+export type DeadlineWindow = 'next' | 'overdue' | 'today' | 'week' | 'later' | 'all';
+export interface LibraryAnswer { answer: string; docIds: string[]; view: 'deadlines' | 'documents' | 'both' | 'none'; window: DeadlineWindow | null }
 
 /** One compact line of facts per document — what Qwen is allowed to answer from. */
+/** The same countdown wording the deadline cards use, so the answer and the cards never disagree. */
+function deadlinePhrase(due: number, now: number): string {
+  const d0 = new Date(now); d0.setHours(0, 0, 0, 0);
+  const d1 = new Date(due); d1.setHours(0, 0, 0, 0);
+  const days = Math.round((d1.getTime() - d0.getTime()) / 86_400_000);
+  if (days < 0) return Math.abs(days) + ' day' + (days === -1 ? '' : 's') + ' overdue';
+  if (days === 0) return 'due today';
+  return 'due in ' + days + ' day' + (days === 1 ? '' : 's');
+}
+
 export function libraryFacts(docs: Doc[], templates: Template[], rules: DeadlineRule[], now = Date.now()) {
   const cal = new Map(calendarEntries(docs, rules, now).map((e) => [e.doc.id, e]));
   const day = (t: number | null | undefined) => (t ? new Date(t).toISOString().slice(0, 10) : null);
@@ -173,7 +185,9 @@ export function libraryFacts(docs: Doc[], templates: Template[], rules: Deadline
     const values = Object.fromEntries(Object.entries(d.values).filter(([, v]) => v && v.length <= 80).slice(0, 12));
     return {
       id: d.id, file: d.name, template: d.templateName, regime: d.regimeShort, vessel_or_site: d.vessel, status: d.status === 'sent' ? 'submitted' : d.status,
-      created: day(d.createdAt), submitted: day(d.sentAt), due: day(e?.due), deadline_state: e?.state, days_late: e?.daysLate || undefined,
+      // a submitted document has no open deadline: only its timeliness is kept
+      created: day(d.createdAt), submitted: day(d.sentAt),
+      ...(d.status === 'sent' ? { submitted_on_time: e?.state === 'ontime' } : { due: day(e?.due), deadline: e ? deadlinePhrase(e.due, now) : undefined }),
       signed: !!d.signature && verifySeal(t, d) === 'valid', signed_by: d.signature?.signer, prepared_by: d.by,
       missing: t ? missingMandatory(t, d.values).map((f) => f.label) : [], values,
     };
@@ -183,21 +197,44 @@ export function libraryFacts(docs: Doc[], templates: Template[], rules: Deadline
 export async function askLibrary(question: string, docs: Doc[], templates: Template[], rules: DeadlineRule[]): Promise<LibraryAnswer> {
   const facts = libraryFacts(docs, templates, rules);
   const today = new Date().toISOString().slice(0, 10);
-  const totals = { documents: docs.length, draft: docs.filter((d) => d.status === 'draft').length, reviewed: docs.filter((d) => d.status === 'reviewed').length, submitted: docs.filter((d) => d.status === 'sent').length, templates: templates.length };
+  // outstanding documents in deadline order (overdue first) so "closest / next / most urgent" is never guessed
+  const byDue = facts.filter((f) => f.status !== 'submitted' && 'due' in f && f.due).map((f) => f as typeof f & { due: string; deadline?: string }).sort((a, b) => (a.due < b.due ? -1 : a.due > b.due ? 1 : 0)).map((f) => ({ id: f.id, due: f.due, deadline: f.deadline }));
+  const nameOf = (id: string) => { const f = facts.find((x) => x.id === id); return f ? f.template + ' · ' + f.vessel_or_site : id; };
+  const group = (test: (deadline: string) => boolean) => byDue.filter((b) => b.deadline && test(b.deadline)).map((b) => ({ id: b.id, name: nameOf(b.id), deadline: b.deadline }));
+  const totals = { documents: docs.length, draft: docs.filter((d) => d.status === 'draft').length, reviewed: docs.filter((d) => d.status === 'reviewed').length, submitted: docs.filter((d) => d.status === 'sent').length };
+  const blankTemplates = templates.length;
   const system = 'You are the document assistant of a marine & offshore company\'s compliance library. You answer questions about the documents listed in the data, and nothing else. Answer with a single JSON object and nothing else.';
-  const user = `Today is ${today}. Library totals: ${JSON.stringify(totals)}.
-Documents (deadline_state: overdue | today | soon = due within 7 days | later | ontime = submitted on time | late = submitted after the due date):
+  const user = `Today is ${today}. Document totals: ${JSON.stringify(totals)}. (Separately there are ${blankTemplates} blank templates — forms to start new documents from; they are not documents.)
+Documents ("deadline" is the exact wording the app shows on each deadline card — e.g. "due today", "1 day overdue", "due in 3 days"):
 ${JSON.stringify(facts)}
+
+Deadlines, already worked out by the app (use these groups as they are — do not recompute from dates):
+- most urgent outstanding document: ${JSON.stringify(byDue[0] ? { id: byDue[0].id, name: nameOf(byDue[0].id), deadline: byDue[0].deadline } : null)}
+- overdue: ${JSON.stringify(group((x) => /overdue/.test(x)))}
+- due today: ${JSON.stringify(group((x) => x === 'due today'))}
+- due in the next 7 days: ${JSON.stringify(group((x) => { const m = x.match(/^due in (\d+)/); return !!m && +m[1] <= 7; }))}
+- due later than 7 days: ${JSON.stringify(group((x) => { const m = x.match(/^due in (\d+)/); return !!m && +m[1] > 7; }))}
+("this week" / "soon" = overdue + due today + due in the next 7 days.)
 
 Question: """${question.slice(0, 500)}"""
 
-Return {"answer": "...", "doc_ids": ["..."]}.
+Return {"answer": "...", "doc_ids": ["..."], "view": "deadlines" | "documents" | "both" | "none", "window": "next" | "overdue" | "today" | "week" | "later" | "all" | null}.
+- "window" (only for deadline questions, else null): "next" = the single most urgent / closest deadline; "overdue"; "today" = due today; "week" = this week / soon / what to submit next (overdue + today + next 7 days); "later" = beyond 7 days; "all" = every open deadline. The app then shows the exact list of deadline cards and their counts itself.
+- When "window" is set, "answer" is ONE short sentence that introduces that list in the user's language — do NOT count or list documents (the app does that, exactly); for "next" you may name the most urgent document with its deadline wording.
+- "view": which cards to show under your answer. "deadlines" when the question is about due dates, deadlines, overdue, urgency or what to submit next; "documents" when the user wants to find or open documents; "both" when it is about specific documents AND their deadlines; "none" for counts, totals, greetings or general questions.
+- For "closest / next / most urgent deadline": an overdue document comes before anything due in the future — use the deadline order above.
+- When you state how far a deadline is, use the document's "deadline" wording exactly; never work it out yourself from dates.
 - "answer": 1-3 short sentences in the SAME LANGUAGE as the question, using only the data above (counts, dates, names, what is missing). Be specific (numbers, dates, vessel names). For a greeting or small talk, answer briefly and say what you can help with.
 - "doc_ids": ids of the documents the answer is about, most relevant first (max 12); [] if it is not about specific documents.
+- Never show internal ids (like "d_04") in "answer": name a document by its template and vessel/site, or its file name without the extension.
+- Deadlines concern only documents that are NOT yet submitted; a submitted document has no open deadline. For deadline questions put only outstanding documents in "doc_ids", overdue first.
+- Templates are not documents; only mention templates if asked about them.
 - Never invent documents, values or regulations that are not in the data.`;
   const root = parseJson(await callQwen(system, user, 600, true, 45_000));
   const known = new Set(docs.map((d) => d.id));
   const ids = Array.isArray(root.doc_ids) ? (root.doc_ids as unknown[]).filter((x): x is string => typeof x === 'string' && known.has(x)).slice(0, 12) : [];
   if (!isStr(root.answer)) throw new LLMError('Qwen returned no answer.');
-  return { answer: String(root.answer).trim(), docIds: ids };
+  const window = (['next', 'overdue', 'today', 'week', 'later', 'all'] as const).find((w) => w === root.window) || null;
+  const view = window ? 'deadlines' : (['deadlines', 'documents', 'both', 'none'] as const).find((v) => v === root.view) || (ids.length ? 'documents' : 'none');
+  return { answer: String(root.answer).trim(), docIds: [...new Set(ids)], view, window };
 }

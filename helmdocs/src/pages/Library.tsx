@@ -8,9 +8,9 @@ import { applyFilter, byRegime, byStatus, docRows, inPeriod, perDay, perWeek, st
 import { Topbar } from '../App';
 import { Ic, regimeColor, regimeIcon } from '../components/ui/Icons';
 import { DayBars, RegimeBars, StatusDonut, WeekBars } from '../components/charts/Charts';
-import { RemindersPanel } from '../components/Reminders';
+import { ReminderCard, RemindersPanel, SubmitModal, VersionsModal } from '../components/Reminders';
 import { computeReminders } from '../engine/reminders';
-import { aiAvailable, askLibrary } from '../engine/llm';
+import { aiAvailable, askLibrary, type DeadlineWindow } from '../engine/llm';
 
 type SortKey = 'date' | 'name' | 'template' | 'vessel' | 'status' | 'minutes';
 const STATUS_LABEL: Record<DocStatus, string> = { draft: 'Draft', reviewed: 'Reviewed', sent: 'Sent' };
@@ -72,7 +72,9 @@ export function Library() {
 
   // Qwen answers plain-language questions about the library; keyword search stays as the instant first pass
   const [aiOn, setAiOn] = useState(false);
-  const [ai, setAi] = useState<{ q: string; answer: string; ids: string[] } | null>(null);
+  const [ai, setAi] = useState<{ q: string; answer: string; ids: string[]; view: 'deadlines' | 'documents' | 'both' | 'none'; window: DeadlineWindow | null } | null>(null);
+  const [versionsFor, setVersionsFor] = useState<string | null>(null);
+  const [submitFor, setSubmitFor] = useState<string | null>(null);
   const [asking, setAsking] = useState<string | null>(null);
   const [aiErr, setAiErr] = useState<string | null>(null);
   const lastAsked = useRef('');
@@ -81,7 +83,7 @@ export function Library() {
     const question = q.trim();
     if (!question || !aiOn || asking) return;
     lastAsked.current = question; setAsking(question); setAiErr(null);
-    try { const r = await askLibrary(question, docs, templatesAll, rulesAll); setAi({ q: question, answer: r.answer, ids: r.docIds }); }
+    try { const r = await askLibrary(question, docs, templatesAll, rulesAll); setAi({ q: question, answer: r.answer, ids: r.docIds, view: r.view, window: r.window }); }
     catch (e) { setAiErr((e instanceof Error ? e.message : 'Qwen failed.') + ' Showing keyword results instead.'); }
     finally { setAsking(null); }
   };
@@ -94,6 +96,28 @@ export function Library() {
   }, [query, aiOn, result.hits.length]); // eslint-disable-line react-hooks/exhaustive-deps
   const aiNow = ai && ai.q === query.trim() ? ai : null;
   const aiHits = aiNow ? aiNow.ids.map((id) => docs.find((d) => d.id === id)).filter((d): d is Doc => !!d) : [];
+  // Qwen picks the view; the page fills the existing cards: deadline cards for outstanding documents, document cards otherwise
+  const deadlineRules = useStore((s) => s.settings.deadlines);
+  const aiReminders = useMemo(() => {
+    if (!aiNow || (aiNow.view !== 'deadlines' && aiNow.view !== 'both')) return [];
+    const all = computeReminders(docs, templatesAll, deadlineRules); // already in deadline order, overdue first
+    // Qwen chose the window; which documents fall in it is the app's own deadline arithmetic, so the cards are always complete
+    const w = aiNow.window;
+    if (w === 'next') return all.slice(0, 1);
+    if (w === 'overdue') return all.filter((r) => r.urgency === 'overdue');
+    if (w === 'today') return all.filter((r) => r.urgency === 'today');
+    if (w === 'week') return all.filter((r) => r.urgency !== 'later');
+    if (w === 'later') return all.filter((r) => r.urgency === 'later');
+    if (w === 'all') return all;
+    return aiNow.ids.map((id) => all.find((r) => r.doc.id === id)).filter((r): r is NonNullable<typeof r> => !!r).sort((a, b) => a.due - b.due);
+  }, [aiNow, docs, templatesAll, deadlineRules]);
+  const countLine = (() => {
+    if (!aiNow?.window || aiNow.window === 'next') return '';
+    const n = (u: string) => aiReminders.filter((r) => r.urgency === u).length;
+    const parts = [n('overdue') && n('overdue') + ' overdue', n('today') && n('today') + ' due today', n('soon') && n('soon') + ' due in the next 7 days', n('later') && n('later') + ' due later'].filter(Boolean);
+    return aiReminders.length ? aiReminders.length + ' document' + (aiReminders.length === 1 ? '' : 's') + (parts.length ? ' · ' + parts.join(' · ') : '') : 'Nothing in this window — all clear.';
+  })();
+  const aiDocCards = !aiNow || aiNow.view === 'none' ? [] : aiNow.view === 'documents' ? aiHits : aiHits.filter((d) => !aiReminders.some((r) => r.doc.id === d.id));
 
   return (
     <>
@@ -239,9 +263,13 @@ export function Library() {
               <div style={{ padding: '10px 12px', borderRadius: 10, background: 'rgba(143,125,255,.12)', border: '1px solid rgba(143,125,255,.35)', fontSize: 12.5, lineHeight: 1.5 }}>
                 <div style={{ fontSize: 10.5, fontWeight: 700, color: 'var(--purple-t)', marginBottom: 4, display: 'flex', alignItems: 'center', gap: 5 }}><Ic.spark size={11} />Qwen · answered from this library only</div>
                 {aiNow.answer}
+                {countLine && <div style={{ marginTop: 6, fontSize: 11.5, fontWeight: 700, color: 'var(--ink)' }} data-testid="ai-count">{countLine}</div>}
               </div>
-              {aiHits.length > 0 && <div className="stack" style={{ marginTop: 8, overflow: 'auto', maxHeight: 300, flexShrink: 0 }} data-testid="ai-results">
-                {aiHits.map((d) => { const I = regimeIcon(d.regimeShort); return (
+              {aiReminders.length > 0 && <div style={{ marginTop: 8, display: 'flex', flexDirection: 'column', gap: 6, overflow: 'auto', maxHeight: 360, flexShrink: 0 }} data-testid="ai-deadlines">
+                {aiReminders.map((r) => <ReminderCard key={r.doc.id} r={r} onOpen={() => nav('/assemble/' + r.doc.id)} onVersions={() => setVersionsFor(r.doc.id)} onSubmit={() => setSubmitFor(r.doc.id)} />)}
+              </div>}
+              {aiDocCards.length > 0 && <div className="stack" style={{ marginTop: 8, overflow: 'auto', maxHeight: 300, flexShrink: 0 }} data-testid="ai-results">
+                {aiDocCards.map((d) => { const I = regimeIcon(d.regimeShort); return (
                   <button key={d.id} className="res" onClick={() => nav('/assemble/' + d.id)} data-testid="ai-hit">
                     <span style={{ width: 28, height: 28, borderRadius: 7, background: regimeColor(d.regimeShort), color: '#0c1517', display: 'flex', alignItems: 'center', justifyContent: 'center', flexShrink: 0 }}><I size={14} /></span>
                     <div style={{ minWidth: 0, flexGrow: 1 }}>
@@ -255,7 +283,7 @@ export function Library() {
             </div>
           )}
           <div style={{ marginTop: 8, display: 'flex', flexWrap: 'wrap', gap: 6 }}>
-            {sugg.map((s) => <button key={s} className="sug" onClick={() => setQuery(s)} data-testid="suggestion">{s}</button>)}
+            {!aiNow && sugg.map((s) => <button key={s} className="sug" onClick={() => setQuery(s)} data-testid="suggestion">{s}</button>)}
           </div>
           {result.tokens.length > 0 && !aiNow && !(asking && asking === query.trim()) && (
             <>
@@ -284,6 +312,8 @@ export function Library() {
           )}
           {!result.tokens.length && <div style={{ marginTop: 10, fontSize: 11, color: 'var(--muted)', lineHeight: 1.4 }} data-testid="assistant-answer">Ask by vessel, work order, regime or status — keyword search over this company's library only; nothing is drafted or submitted.</div>}
           <RemindersPanel />
+          {versionsFor && <VersionsModal docId={versionsFor} onClose={() => setVersionsFor(null)} />}
+          {submitFor && <SubmitModal docId={submitFor} onClose={() => setSubmitFor(null)} />}
           <div style={{ fontSize: 10.5, color: 'var(--muted)', marginTop: 8, lineHeight: 1.4 }}>Searches this company's library only. Never drafts or submits a filing on its own.</div>
         </aside>
       </div>

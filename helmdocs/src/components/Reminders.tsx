@@ -69,7 +69,7 @@ export function RemindersPanel() {
   );
 }
 
-function ReminderCard({ r, onOpen, onVersions, onSubmit }: { r: Reminder; onOpen: () => void; onVersions: () => void; onSubmit: () => void }) {
+export function ReminderCard({ r, onOpen, onVersions, onSubmit }: { r: Reminder; onOpen: () => void; onVersions: () => void; onSubmit: () => void }) {
   const u = URG[r.urgency];
   const d = new Date(r.due);
   return (
