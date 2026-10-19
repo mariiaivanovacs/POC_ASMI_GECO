@@ -30,6 +30,7 @@ export const Ic = {
   camera: ({ size = 44, ...r }: P) => <svg {...base(size, { strokeWidth: 1.6, ...r })}><path d="M4 8h3l2-3h6l2 3h3v11H4z" /><circle cx="12" cy="13" r="3.5" /></svg>,
   trash: ({ size = 14, ...r }: P) => <svg {...base(size, r)}><path d="M4 7h16" /><path d="M9 7V4h6v3" /><path d="M6 7l1 13h10l1-13" /></svg>,
   refresh: ({ size = 14, ...r }: P) => <svg {...base(size, { strokeWidth: 2.2, ...r })}><path d="M20 12a8 8 0 1 1-2.3-5.7" /><path d="M20 4v5h-5" /></svg>,
+  grip: ({ size = 14, ...r }: P) => <svg width={size} height={size} viewBox="0 0 24 24" fill="currentColor" {...r}><circle cx="9" cy="6" r="1.6" /><circle cx="15" cy="6" r="1.6" /><circle cx="9" cy="12" r="1.6" /><circle cx="15" cy="12" r="1.6" /><circle cx="9" cy="18" r="1.6" /><circle cx="15" cy="18" r="1.6" /></svg>,
   dots: ({ size = 14, ...r }: P) => <svg width={size} height={size} viewBox="0 0 24 24" fill="currentColor" {...r}><circle cx="5" cy="12" r="2" /><circle cx="12" cy="12" r="2" /><circle cx="19" cy="12" r="2" /></svg>,
   building: ({ size = 15, ...r }: P) => <svg {...base(size, r)}><path d="M3 21h18" /><path d="M5 21V7l7-4 7 4v14" /><path d="M9 21v-5h6v5" /></svg>,
   person: ({ size = 15, ...r }: P) => <svg {...base(size, r)}><circle cx="12" cy="8" r="4" /><path d="M4 21c0-4 3.6-7 8-7s8 3 8 7" /></svg>,

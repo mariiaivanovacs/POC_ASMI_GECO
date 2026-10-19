@@ -9,12 +9,36 @@ export interface Ctx { learners: Learner[]; materials: Material[]; exercises: Ex
 const clamp = (v: number) => Math.max(0, Math.min(100, Math.round(v)));
 const mean = (xs: number[]) => (xs.length ? xs.reduce((a, b) => a + b, 0) / xs.length : null);
 
+// A module, as learners get it, is its APPROVED tasks only. Drafts and rejected tasks stay in the builder: they are not
+// handed to learners and do not count towards progress, scores, retention or certificates. Attempts on them (e.g. a
+// trainer previewing a draft as a learner) are ignored here until the task is approved. Content-quality functions
+// further down deliberately still see every task and attempt — they judge the content itself.
+export const isLive = (e: Exercise) => e.reviewStatus === 'approved';
+
+const liveCache = new WeakMap<Exercise[], Set<string>>();
+function liveIds(ctx: Ctx): Set<string> {
+  let ids = liveCache.get(ctx.exercises);
+  if (!ids) { ids = new Set(ctx.exercises.filter(isLive).map((e) => e.id)); liveCache.set(ctx.exercises, ids); }
+  return ids;
+}
+
+export function moduleTasks(ctx: Ctx, materialId: string): Exercise[] {
+  return ctx.exercises.filter((e) => e.materialId === materialId && isLive(e));
+}
+
+/** Attempts that count for learners: only those on approved tasks. */
+export function liveAttempts(ctx: Ctx): Attempt[] {
+  const ids = liveIds(ctx);
+  return ctx.attempts.filter((a) => ids.has(a.exerciseId));
+}
+
 export function attemptsOf(ctx: Ctx, learnerId: string, materialId?: string): Attempt[] {
-  return ctx.attempts.filter((a) => a.learnerId === learnerId && (!materialId || a.materialId === materialId));
+  const ids = liveIds(ctx);
+  return ctx.attempts.filter((a) => a.learnerId === learnerId && (!materialId || a.materialId === materialId) && ids.has(a.exerciseId));
 }
 
 export function moduleProgress(ctx: Ctx, learnerId: string, materialId: string): number {
-  const total = ctx.exercises.filter((e) => e.materialId === materialId).length;
+  const total = moduleTasks(ctx, materialId).length;
   if (!total) return 0;
   const passed = new Set(attemptsOf(ctx, learnerId, materialId).filter((a) => a.passed).map((a) => a.exerciseId));
   return clamp((passed.size / total) * 100);
@@ -135,7 +159,7 @@ export function moduleRows(ctx: Ctx, learnerId: string): ModuleRow[] {
   return modulesOf(ctx, learnerId).map((m) => {
     const progress = moduleProgress(ctx, learnerId, m.id);
     const score = quizAvg(ctx, learnerId, m.id);
-    const tasks = ctx.exercises.filter((e) => e.materialId === m.id).length;
+    const tasks = moduleTasks(ctx, m.id).length;
     const minutes = Math.round(attemptsOf(ctx, learnerId, m.id).reduce((s, a) => s + a.seconds, 0) / 60);
     return { material: m, progress, score, status: progress === 100 ? 'Completed' : progress === 0 ? 'Not started' : 'Ongoing', tasks, minutes };
   });
@@ -176,7 +200,7 @@ export function strongestType(ctx: Ctx, learnerId: string): string { const xs = 
 export function nextUp(ctx: Ctx, learnerId: string): { title: string; why: string } | null {
   const passed = new Set(attemptsOf(ctx, learnerId).filter((a) => a.passed).map((a) => a.exerciseId));
   for (const m of modulesOf(ctx, learnerId)) {
-    const e = ctx.exercises.find((x) => x.materialId === m.id && !passed.has(x.id));
+    const e = moduleTasks(ctx, m.id).find((x) => !passed.has(x.id));
     if (e) return { title: TYPE_LABEL[e.type] + ' · ' + e.title, why: 'Next unfinished task in ' + m.short };
   }
   return null;
@@ -252,7 +276,7 @@ export function alerts(ctx: Ctx, ids: string[]): Alert[] {
 export interface TypeFailure { type: string; label: string; attempts: number; failed: number; rate: number }
 export function failureByType(ctx: Ctx, ids: string[]): TypeFailure[] {
   const m = new Map<string, { a: number; f: number }>();
-  for (const a of ctx.attempts.filter((x) => ids.includes(x.learnerId))) {
+  for (const a of liveAttempts(ctx).filter((x) => ids.includes(x.learnerId))) {
     const e = m.get(a.type) || { a: 0, f: 0 };
     e.a++; if (!a.passed) e.f++;
     m.set(a.type, e);
@@ -263,7 +287,7 @@ export function failureByType(ctx: Ctx, ids: string[]): TypeFailure[] {
 export interface MissedTask { exercise: Exercise; material: Material; failed: number; learners: number }
 export function mostMissed(ctx: Ctx, ids: string[], n = 5): MissedTask[] {
   const m = new Map<string, { f: number; l: Set<string> }>();
-  for (const a of ctx.attempts.filter((x) => ids.includes(x.learnerId) && !x.passed)) {
+  for (const a of liveAttempts(ctx).filter((x) => ids.includes(x.learnerId) && !x.passed)) {
     const e = m.get(a.exerciseId) || { f: 0, l: new Set<string>() };
     e.f++; e.l.add(a.learnerId);
     m.set(a.exerciseId, e);
@@ -304,7 +328,7 @@ export function predict(ctx: Ctx, learnerId: string, materialId: string): Predic
   const m = ctx.materials.find((x) => x.id === materialId);
   const r = retention(ctx, learnerId, materialId);
   const mine = attemptsOf(ctx, learnerId, materialId);
-  const cohort = ctx.attempts.filter((a) => a.materialId === materialId);
+  const cohort = liveAttempts(ctx).filter((a) => a.materialId === materialId);
   let failRate = 0.15, failSource: Prediction['failSource'] = 'default';
   if (mine.length >= 3) { failRate = mine.filter((a) => !a.passed).length / mine.length; failSource = 'learner'; }
   else if (cohort.length >= 3) { failRate = cohort.filter((a) => !a.passed).length / cohort.length; failSource = 'cohort'; }
@@ -330,7 +354,7 @@ export function predictions(ctx: Ctx, learnerId: string): Prediction[] {
 
 export function progressHistory(ctx: Ctx, learnerId: string, days = 14): { label: string; pct: number }[] {
   const mods = modulesOf(ctx, learnerId);
-  const total = mods.reduce((s, m) => s + ctx.exercises.filter((e) => e.materialId === m.id).length, 0);
+  const total = mods.reduce((s, m) => s + moduleTasks(ctx, m.id).length, 0);
   const mine = attemptsOf(ctx, learnerId).filter((a) => a.passed && mods.some((m) => m.id === a.materialId));
   const out: { label: string; pct: number }[] = [];
   for (let d = days; d >= 0; d--) {
@@ -343,11 +367,11 @@ export function progressHistory(ctx: Ctx, learnerId: string, days = 14): { label
 }
 
 // ---- Compliance coverage & certificate eligibility ---------------------------------------------
+// Certificate = every approved task of the module passed. Pending drafts no longer block it (learners never see them);
+// a module with nothing approved yet has nothing to certify.
 export function canIssueCertificate(ctx: Ctx, learnerId: string, materialId: string): boolean {
-  const exs = ctx.exercises.filter((e) => e.materialId === materialId);
-  if (!exs.length) return false;
-  if (moduleProgress(ctx, learnerId, materialId) < 100) return false;
-  return exs.every((e) => e.reviewStatus === 'approved');
+  if (!moduleTasks(ctx, materialId).length) return false;
+  return moduleProgress(ctx, learnerId, materialId) >= 100;
 }
 
 export function reviewCoverage(ctx: Ctx, materialId: string): { approved: number; draft: number; rejected: number; total: number } {

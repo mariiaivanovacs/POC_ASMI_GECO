@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { Link, useNavigate, useParams } from 'react-router-dom';
 import { useStore } from '../store/useStore';
 import { aiNote, aiScore, band, canIssueCertificate, cohortKpis, complianceCoverage, flag, lastActive, moduleRows, nextUp, overallProgress, participation, practical, progressHistory, quizAvg, toCsv, topModules, trend, weeklyActivity, type Ctx } from '../store/stats';
@@ -39,7 +39,11 @@ export function Learners() {
     return list.sort((a, b) => (key(a) < key(b) ? -1 : key(a) > key(b) ? 1 : 0) * dir);
   }, [learners, dept, sort, dir, ctx]);
 
-  const selected = learners.find((l) => l.id === learnerId) || rows[0]?.l || learners[0];
+  // The list is the page; a learner's details open below it only once one is picked (clicking them again closes it).
+  const selected = learners.find((l) => l.id === learnerId) || null;
+  const detailRef = useRef<HTMLDivElement>(null);
+  useEffect(() => { if (selected) detailRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' }); }, [selected?.id]); // eslint-disable-line react-hooks/exhaustive-deps
+  const pick = (id: string) => nav(selected?.id === id ? '/learners' : '/learners/' + id);
   const kpi = cohortKpis(ctx, rows.map((r) => r.l.id));
   const toggleSort = (k: SortKey) => { if (sort === k) setDir(dir === 1 ? -1 : 1); else { setSort(k); setDir(1); } };
 
@@ -54,13 +58,9 @@ export function Learners() {
 
   return (
     <>
-      <Topbar title={selected ? selected.name : 'Learners'} crumb={<>Learners &nbsp;›&nbsp; <b>Learner details</b></>} back="/builder"
+      <Topbar title={selected ? selected.name : 'Learners'} crumb={selected ? <>Learners &nbsp;›&nbsp; <b>{selected.name}</b></> : <><b>Learners</b> &nbsp;·&nbsp; click a learner to see their details</>} back={selected ? '/learners' : '/builder'}
         right={<button className="btn" onClick={exportCsv} data-testid="export-csv"><Ic.download />Export CSV</button>} />
       <div className="content col">
-        {selected && <LearnerDetail ctx={ctx} learnerId={selected.id} />}
-
-        <HealthPanel ctx={ctx} ids={rows.map((r) => r.l.id)} />
-
         <section className="card" style={{ padding: '16px 14px', display: 'flex', flexDirection: 'column', gap: 10 }}>
           <div className="row-between" style={{ flexWrap: 'wrap' }}>
             <div style={{ display: 'flex', alignItems: 'center', gap: 18 }}>
@@ -81,8 +81,8 @@ export function Learners() {
               <div style={{ display: 'flex', gap: 6 }}>{depts.map((d) => <button key={d} className={'chip' + (dept === d ? ' on' : '')} onClick={() => setDept(d)} data-testid="dept-filter">{d}</button>)}</div>
             </div>
           </div>
-          {view === 'bars' && <CohortBars rows={rows.map((r) => ({ l: r.l, progress: r.progress, quiz: r.quiz }))} selectedId={selected?.id} onPick={(id) => nav('/learners/' + id)} />}
-          {view === 'lines' && <CohortLines ctx={ctx} learners={rows.map((r) => r.l)} selectedId={selected?.id} onPick={(id) => nav('/learners/' + id)} />}
+          {view === 'bars' && <CohortBars rows={rows.map((r) => ({ l: r.l, progress: r.progress, quiz: r.quiz }))} selectedId={selected?.id} onPick={pick} />}
+          {view === 'lines' && <CohortLines ctx={ctx} learners={rows.map((r) => r.l)} selectedId={selected?.id} onPick={pick} />}
           {view === 'table' && <>
           <div className="row head">
             <button onClick={() => toggleSort('name')}>Learner {sort === 'name' ? (dir === 1 ? '↑' : '↓') : ''}</button>
@@ -96,7 +96,7 @@ export function Learners() {
           <div className="stack" style={{ gap: 2 }} data-testid="cohort">
             {rows.length === 0 && <div className="empty">No learners in this department.</div>}
             {rows.map((r) => (
-              <button key={r.l.id} className={'row' + (selected?.id === r.l.id ? ' on' : '')} onClick={() => nav('/learners/' + r.l.id)} data-testid="learner-row">
+              <button key={r.l.id} className={'row' + (selected?.id === r.l.id ? ' on' : '')} onClick={() => pick(r.l.id)} data-testid="learner-row">
                 <span style={{ display: 'flex', alignItems: 'center', gap: 10, minWidth: 0 }}>
                   <Avatar av={r.l.avatar} />
                   <span style={{ minWidth: 0 }}><span style={{ display: 'block', fontSize: 13, fontWeight: 700, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{r.l.name}</span><span style={{ display: 'block', fontSize: 11, color: 'var(--muted)' }}>{r.l.role}</span></span>
@@ -112,6 +112,10 @@ export function Learners() {
           </div>
           </>}
         </section>
+
+        {selected && <div ref={detailRef} style={{ scrollMarginTop: 12 }}><LearnerDetail ctx={ctx} learnerId={selected.id} /></div>}
+
+        <HealthPanel ctx={ctx} ids={rows.map((r) => r.l.id)} />
       </div>
     </>
   );
@@ -198,7 +202,7 @@ function LearnerDetail({ ctx, learnerId }: { ctx: Ctx; learnerId: string }) {
                 <span style={{ width: 44, height: 44, borderRadius: 12, background: CAT_COLOR[m.material.category], display: 'flex', alignItems: 'center', justifyContent: 'center', color: '#fff', flexShrink: 0 }}><I /></span>
                 <div style={{ width: 300, minWidth: 0 }}>
                   <div style={{ fontSize: 13, fontWeight: 700, whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>{m.material.name}</div>
-                  <div style={{ display: 'flex', gap: 6, marginTop: 5 }}><span className="tag">{catLabel[m.material.category]}</span><span className="tag g">{m.tasks} tasks</span><span className="tag g">{m.minutes} min</span></div>
+                  <div style={{ display: 'flex', gap: 6, marginTop: 5 }}><span className="tag">{catLabel[m.material.category]}</span><span className="tag g">{m.tasks} task{m.tasks === 1 ? '' : 's'}</span><span className="tag g">{m.minutes} min</span></div>
                 </div>
                 <div style={{ flexGrow: 1, display: 'flex', alignItems: 'center', gap: 10 }}><span style={{ flexGrow: 1 }}><ProgressBar value={m.progress} /></span><span style={{ fontSize: 12, fontWeight: 700, width: 36 }} data-testid="module-progress">{m.progress}%</span></div>
                 <div style={{ width: 60, textAlign: 'right' }}><span style={{ fontFamily: 'var(--font-h)', fontSize: 15, fontWeight: 800 }}>{m.score === null ? '—' : m.score}</span><span style={{ fontSize: 10.5, color: 'var(--muted)' }}>/100</span></div>

@@ -26,6 +26,7 @@ export function TaskBuilder() {
   const setPlayAs = useStore((s) => s.setPlayAs);
   const updateTitle = useStore((s) => s.updateExerciseTitle);
   const deleteExercise = useStore((s) => s.deleteExercise);
+  const moveExercise = useStore((s) => s.moveExercise);
   const approveExercise = useStore((s) => s.approveExercise);
   const rejectExercise = useStore((s) => s.rejectExercise);
   const setReviewer = useStore((s) => s.setReviewer);
@@ -48,6 +49,7 @@ export function TaskBuilder() {
   const [publishOpen, setPublishOpen] = useState(false);
   const [round, setRound] = useState(0);
   const [pendingAction, setPendingAction] = useState<{ id: string; kind: 'approve' | 'reject' } | null>(null);
+  const [drag, setDrag] = useState<{ id: string; over: string | null } | null>(null);
 
   const shown = list.filter((e) => typeFilter === 'all' || (typeFilter === 'needs-review' ? e.reviewStatus === 'draft' : e.type === typeFilter));
   const current = list.find((e) => e.id === selId) || shown[0] || list[0] || null;
@@ -122,6 +124,7 @@ export function TaskBuilder() {
             <div className="row-between" style={{ fontSize: 12 }}><span style={{ color: 'var(--amber-t)', fontWeight: 700 }}>Draft (needs review)</span><b>{coverage.draft}</b></div>
             <div className="row-between" style={{ fontSize: 12 }}><span style={{ color: 'var(--red-t)', fontWeight: 700 }}>Rejected</span><b>{coverage.rejected}</b></div>
           </div>
+          <div style={{ fontSize: 11.5, color: 'var(--ink2)', marginTop: 2, lineHeight: 1.45 }} data-testid="module-rule">Learners get only the <b>{coverage.approved}</b> approved task{coverage.approved === 1 ? '' : 's'}. Drafts and rejected tasks stay here.</div>
           <div style={{ fontSize: 11, color: 'var(--muted)', marginTop: 2 }}>Reviewing as: {settings.reviewerName ? settings.reviewerName + ' (' + settings.reviewerRole + ')' : 'not set — you’ll be asked on your first approval'}</div>
         </section>
 
@@ -137,12 +140,15 @@ export function TaskBuilder() {
               <div className="card-h">Generated tasks <span style={{ color: 'var(--muted)', fontWeight: 500, marginLeft: 4 }}>{shown.length} of {list.length}</span></div>
               <div style={{ display: 'flex', gap: 6 }}>
                 {typeFilter !== 'all' && typeFilter !== 'needs-review' && <button className="btn ai sm" onClick={() => { const n = regenerateType(material.id, typeFilter); toast(n ? n + ' ' + TYPE_LABEL[typeFilter].toLowerCase() + ' task' + (n > 1 ? 's' : '') + ' regenerated' : 'The text has no source for ' + TYPE_LABEL[typeFilter].toLowerCase() + ' tasks', n ? 'ok' : 'err'); }} data-testid="regenerate"><Ic.refresh />Regenerate {TYPE_LABEL[typeFilter].toLowerCase()}</button>}
-                <span style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 11.5, color: 'var(--blue-d)', fontWeight: 600 }}><Ic.spark size={11} />Edit any title inline</span>
+                <span style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 11.5, color: 'var(--blue-d)', fontWeight: 600 }}><Ic.grip size={12} />Drag to reorder · edit any title inline</span>
               </div>
             </div>
             <div className="stack" style={{ marginTop: 8, gap: 2, overflow: 'auto', minHeight: 0 }} data-testid="task-list">
               {shown.length === 0 && <div className="empty">{typeFilter === 'needs-review' ? 'Nothing pending — every task in this module has been reviewed.' : 'No tasks of this type — the text gave the engine nothing to build one from.'}</div>}
-              {shown.map((e) => <TaskRow key={e.id} e={e} q={exerciseQuality(ctx, e.id)} selected={current?.id === e.id} onSelect={() => setSelId(e.id)} onTitle={(v) => updateTitle(e.id, v)} onDelete={() => deleteExercise(e.id)} onApprove={() => onApprove(e.id)} onReject={() => onReject(e.id)} />)}
+              {shown.map((e) => <TaskRow key={e.id} e={e} q={exerciseQuality(ctx, e.id)} selected={current?.id === e.id} onSelect={() => setSelId(e.id)} onTitle={(v) => updateTitle(e.id, v)} onDelete={() => deleteExercise(e.id)} onApprove={() => onApprove(e.id)} onReject={() => onReject(e.id)}
+                dragging={drag?.id === e.id} dropMark={drag && drag.over === e.id && drag.id !== e.id ? (list.findIndex((x) => x.id === drag.id) < list.findIndex((x) => x.id === e.id) ? 'below' : 'above') : null}
+                onDragStart={() => setDrag({ id: e.id, over: null })} onDragOver={(id) => setDrag((d) => (d && d.over !== id ? { ...d, over: id } : d))}
+                onDrop={() => { if (drag?.over) moveExercise(drag.id, drag.over); setDrag(null); }} />)}
             </div>
           </div>
         </section>
@@ -173,6 +179,7 @@ export function TaskBuilder() {
               </div>
             </div>
             <div className="phone-body" data-testid="phone-body">
+              {current && current.reviewStatus !== 'approved' && <div className="pill risk" style={{ alignSelf: 'flex-start' }} data-testid="preview-not-live">{current.reviewStatus === 'rejected' ? 'Rejected' : 'Draft'} · preview only — learners don't get this task</div>}
               {current ? <Player key={current.id + ':' + round + ':' + settings.lang} exercise={current} lang={settings.lang} showHints={level === 'new'} onDone={onDone} pin={settings.pin} /> : <div className="empty">No task selected.</div>}
             </div>
             <div className="phone-foot">
@@ -189,13 +196,25 @@ export function TaskBuilder() {
   );
 }
 
-function TaskRow({ e, q, selected, onSelect, onTitle, onDelete, onApprove, onReject }: { e: Exercise; q: ExerciseQuality; selected: boolean; onSelect: () => void; onTitle: (v: string) => void; onDelete: () => void; onApprove: () => void; onReject: () => void }) {
+interface DragProps { dragging: boolean; dropMark: 'above' | 'below' | null; onDragStart: () => void; onDragOver: (id: string) => void; onDrop: () => void }
+
+function TaskRow({ e, q, selected, onSelect, onTitle, onDelete, onApprove, onReject, dragging, dropMark, onDragStart, onDragOver, onDrop }: { e: Exercise; q: ExerciseQuality; selected: boolean; onSelect: () => void; onTitle: (v: string) => void; onDelete: () => void; onApprove: () => void; onReject: () => void } & DragProps) {
   const [v, setV] = useState(e.title);
   useEffect(() => setV(e.title), [e.title]);
   const I = TYPE_ICON[e.type];
   return (
-    <div className={'task' + (selected ? ' on' : '')} onClick={onSelect} data-testid="task-row" data-type={e.type} data-title={e.title} data-review={e.reviewStatus}>
+    <div className={'task' + (selected ? ' on' : '') + (dragging ? ' dragging' : '') + (dropMark ? ' drop-' + dropMark : '')} onClick={onSelect} data-testid="task-row" data-id={e.id} data-type={e.type} data-title={e.title} data-review={e.reviewStatus}>
       <div className="task-main">
+        {/* Pointer events (not HTML5 drag-and-drop) so reordering works with a mouse and on touch screens. Only the grip
+            starts a drag, so the title input stays editable. */}
+        <span className="grip" title="Drag to reorder" aria-label="Drag to reorder" data-testid="drag-handle" onClick={(ev) => ev.stopPropagation()}
+          onPointerDown={(ev) => { ev.preventDefault(); ev.stopPropagation(); (ev.currentTarget as HTMLElement).setPointerCapture(ev.pointerId); onDragStart(); }}
+          onPointerMove={(ev) => {
+            if (!dragging) return;
+            const row = document.elementFromPoint(ev.clientX, ev.clientY)?.closest('[data-testid="task-row"]') as HTMLElement | null;
+            if (row?.dataset.id) onDragOver(row.dataset.id);
+          }}
+          onPointerUp={() => dragging && onDrop()} onPointerCancel={() => dragging && onDrop()}><Ic.grip /></span>
         <span className="tchip"><I size={11} />{TYPE_LABEL[e.type]}</span>
         <input value={v} onChange={(ev) => setV(ev.target.value)} onBlur={() => v.trim() && v !== e.title && onTitle(v)} onKeyDown={(ev) => ev.key === 'Enter' && (ev.target as HTMLInputElement).blur()} aria-label="Task title" data-testid="task-title" />
         <span className={'pill ' + (e.reviewStatus === 'approved' ? 'ok' : e.reviewStatus === 'rejected' ? 'err' : 'risk')} title={e.reviewedBy ? (e.reviewStatus === 'approved' ? 'Approved by ' : 'Rejected by ') + e.reviewedBy + (e.reviewNote ? ': ' + e.reviewNote : '') : 'Drafted, not yet reviewed'} data-testid="review-pill">{e.reviewStatus === 'approved' ? 'Approved' : e.reviewStatus === 'rejected' ? 'Rejected' : 'Draft'}</span>
@@ -247,9 +266,9 @@ function PublishModal({ coverage, enrolled, onClose, onPublish }: { coverage: Re
   const learners = useStore((s) => s.learners);
   const depts = Array.from(new Set(learners.map((l) => l.dept)));
   const [sel, setSel] = useState<string[]>(depts);
-  const fullyReviewed = coverage.total > 0 && coverage.approved === coverage.total;
-  const [ack, setAck] = useState(false);
-  const canPublish = sel.length > 0 && (fullyReviewed || ack);
+  // Learners only ever get approved tasks, so publishing needs at least one; drafts and rejected tasks are held back.
+  const held = coverage.draft + coverage.rejected;
+  const canPublish = sel.length > 0 && coverage.approved > 0;
   return (
     <div className="modal-bg" onClick={onClose}>
       <div className="modal" onClick={(e) => e.stopPropagation()} role="dialog" aria-label="Publish module">
@@ -258,15 +277,11 @@ function PublishModal({ coverage, enrolled, onClose, onPublish }: { coverage: Re
         <div style={{ display: 'flex', flexWrap: 'wrap', gap: 6, marginTop: 12 }}>
           {depts.map((d) => <button key={d} className={'chip' + (sel.includes(d) ? ' on' : '')} onClick={() => setSel(sel.includes(d) ? sel.filter((x) => x !== d) : [...sel, d])} data-testid="dept-chip">{d} <span style={{ opacity: .7 }}>{learners.filter((l) => l.dept === d).length}</span></button>)}
         </div>
-        <div className={'fb ' + (fullyReviewed ? 'ok' : 'no')} style={{ marginTop: 14 }} data-testid="publish-review-status">
-          {fullyReviewed ? 'All ' + coverage.total + ' tasks in this module are approved.' : coverage.approved + ' of ' + coverage.total + ' tasks are approved — ' + coverage.draft + ' still in draft' + (coverage.rejected ? ', ' + coverage.rejected + ' rejected' : '') + '.'}
+        <div className={'fb ' + (coverage.approved ? 'ok' : 'no')} style={{ marginTop: 14 }} data-testid="publish-review-status">
+          {coverage.approved
+            ? 'Learners get the ' + coverage.approved + ' approved task' + (coverage.approved === 1 ? '' : 's') + '.' + (held ? ' ' + [coverage.draft ? coverage.draft + ' draft' + (coverage.draft === 1 ? '' : 's') : '', coverage.rejected ? coverage.rejected + ' rejected' : ''].filter(Boolean).join(' and ') + ' stay in the builder and join the module only once approved.' : '')
+            : 'No approved tasks yet — approve at least one before publishing. Learners never get drafts.'}
         </div>
-        {!fullyReviewed && (
-          <label style={{ display: 'flex', alignItems: 'flex-start', gap: 8, marginTop: 10, fontSize: 12.5 }}>
-            <input type="checkbox" checked={ack} onChange={(e) => setAck(e.target.checked)} data-testid="publish-ack" style={{ marginTop: 2 }} />
-            <span>I understand this will train staff on unreviewed content and want to publish anyway.</span>
-          </label>
-        )}
         <div style={{ display: 'flex', gap: 8, marginTop: 18, justifyContent: 'flex-end' }}>
           <button className="btn" onClick={onClose}>Cancel</button>
           <button className="btn primary" disabled={!canPublish} onClick={() => onPublish(sel)} data-testid="publish-confirm">Enrol {learners.filter((l) => sel.includes(l.dept)).length} learners</button>

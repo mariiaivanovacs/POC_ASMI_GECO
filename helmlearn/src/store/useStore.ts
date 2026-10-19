@@ -35,6 +35,7 @@ interface State {
   setCategory: (id: string, category: Category) => void;
   updateExerciseTitle: (id: string, title: string) => void;
   deleteExercise: (id: string) => void;
+  moveExercise: (id: string, targetId: string) => void;
   regenerateType: (materialId: string, type: ExType) => number;
   recordAttempt: (a: Omit<Attempt, 'id' | 'at'>) => void;
   publishModule: (materialId: string, depts: string[]) => number;
@@ -192,6 +193,18 @@ export const useStore = create<State>()(
       setCategory: (id, category) => set({ materials: get().materials.map((m) => (m.id === id ? { ...m, category } : m)) }),
       updateExerciseTitle: (id, title) => set({ exercises: get().exercises.map((e) => (e.id === id ? { ...e, title: title.trim() || e.title } : e)) }),
       deleteExercise: (id) => set({ exercises: get().exercises.filter((e) => e.id !== id), attempts: get().attempts.filter((a) => a.exerciseId !== id) }),
+      // Task order is the order of `exercises`; dropping a task on another puts it in that task's place
+      // (after it when dragged down, before it when dragged up).
+      moveExercise: (id, targetId) => {
+        const list = get().exercises;
+        const from = list.findIndex((e) => e.id === id);
+        const to = list.findIndex((e) => e.id === targetId);
+        if (from < 0 || to < 0 || from === to || list[from].materialId !== list[to].materialId) return;
+        const next = list.slice();
+        const [moved] = next.splice(from, 1);
+        next.splice(next.findIndex((e) => e.id === targetId) + (from < to ? 1 : 0), 0, moved);
+        set({ exercises: next });
+      },
 
       regenerateType: (materialId, type) => {
         const m = get().materials.find((x) => x.id === materialId);

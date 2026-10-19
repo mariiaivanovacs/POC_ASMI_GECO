@@ -50,10 +50,13 @@ describe('stats', () => {
 
   it('numbers move when a new passing attempt is recorded', () => {
     const before = overallProgress(c, 'l1');
-    const unfinished = c.exercises.find((e) => e.materialId === 'hw' && !c.attempts.some((a) => a.learnerId === 'l1' && a.exerciseId === e.id && a.passed))!;
-    const after: Ctx = { ...c, attempts: [...c.attempts, { id: 'x', learnerId: 'l1', materialId: 'hw', exerciseId: unfinished.id, type: unfinished.type, score: 100, passed: true, seconds: 90, at: Date.now() }] };
+    // l1 has passed every approved hw task already; their next approved unfinished task is in another module
+    const mods = c.enrollments.filter((e) => e.learnerId === 'l1').map((e) => e.materialId);
+    const unfinished = c.exercises.find((e) => mods.includes(e.materialId) && e.reviewStatus === 'approved' && !c.attempts.some((a) => a.learnerId === 'l1' && a.exerciseId === e.id && a.passed))!;
+    const after: Ctx = { ...c, attempts: [...c.attempts, { id: 'x', learnerId: 'l1', materialId: unfinished.materialId, exerciseId: unfinished.id, type: unfinished.type, score: 100, passed: true, seconds: 90, at: Date.now() }] };
     expect(overallProgress(after, 'l1')).toBeGreaterThan(before);
-    expect(moduleRows(after, 'l1')[0].progress).toBeGreaterThan(moduleRows(c, 'l1')[0].progress);
+    const row = (cx: Ctx) => moduleRows(cx, 'l1').find((r) => r.material.id === unfinished.materialId)!.progress;
+    expect(row(after)).toBeGreaterThan(row(c));
   });
 
   it('cohort KPIs aggregate the filtered set', () => {
@@ -112,7 +115,7 @@ describe('content quality signal', () => {
 
   it('classifies too-hard / healthy / too-easy from pass rate once there is enough evidence', async () => {
     const { exerciseQuality, MIN_EVIDENCE } = await import('../../src/store/stats');
-    const ex = { id: 'x', materialId: 'm', type: 'mcq' as const, level: 'all' as const, title: 't', sourceRef: '', stepIndex: null, generated: true, reviewStatus: 'draft' as const, reviewedBy: null, reviewedAt: null, reviewNote: null, i18n: { en: { type: 'mcq' as const, data: { q: '', opts: ['a', 'b'], correct: 0, hint: '', ok: '', no: '' } } } };
+    const ex = { id: 'x', materialId: 'm', type: 'mcq' as const, level: 'all' as const, title: 't', sourceRef: '', stepIndex: null, generated: true, reviewStatus: 'approved' as const, reviewedBy: null, reviewedAt: null, reviewNote: null, i18n: { en: { type: 'mcq' as const, data: { q: '', opts: ['a', 'b'], correct: 0, hint: '', ok: '', no: '' } } } };
     const mk = (n: number, pass: number, seconds = 60) => Array.from({ length: n }, (_, i) => ({ id: 'a' + i, learnerId: 'l' + i, materialId: 'm', exerciseId: 'x', type: 'mcq' as const, score: i < pass ? 100 : 0, passed: i < pass, seconds, at: 0 }));
     const base = { learners: [], materials: [], exercises: [ex], enrollments: [], now: 0 };
     expect(exerciseQuality({ ...base, attempts: mk(MIN_EVIDENCE - 1, 0) }, 'x').flag).toBe('unproven');
@@ -127,7 +130,7 @@ describe('learning pace', () => {
   it('classifies enrolment progress against the target window', async () => {
     const { pace, TARGET_DAYS } = await import('../../src/store/stats');
     const DAY = 86_400_000; const now = Date.now();
-    const exs = Array.from({ length: 10 }, (_, i) => ({ id: 'e' + i, materialId: 'm', type: 'mcq' as const, level: 'all' as const, title: 't', sourceRef: '', stepIndex: null, generated: true, reviewStatus: 'draft' as const, reviewedBy: null, reviewedAt: null, reviewNote: null, i18n: { en: { type: 'mcq' as const, data: { q: '', opts: ['a', 'b'], correct: 0, hint: '', ok: '', no: '' } } } }));
+    const exs = Array.from({ length: 10 }, (_, i) => ({ id: 'e' + i, materialId: 'm', type: 'mcq' as const, level: 'all' as const, title: 't', sourceRef: '', stepIndex: null, generated: true, reviewStatus: 'approved' as const, reviewedBy: null, reviewedAt: null, reviewNote: null, i18n: { en: { type: 'mcq' as const, data: { q: '', opts: ['a', 'b'], correct: 0, hint: '', ok: '', no: '' } } } }));
     const mk = (daysEnrolled: number, passedCount: number, lastActiveDaysAgo: number) => ({
       learners: [], materials: [], exercises: exs, now,
       enrollments: [{ learnerId: 'l', materialId: 'm', at: now - daysEnrolled * DAY }],
@@ -140,5 +143,48 @@ describe('learning pace', () => {
     expect(pace(mk(10, 5, 6), 'l', 'm').status).toBe('inactive');
     expect(pace(mk(TARGET_DAYS + 3, 5, 1), 'l', 'm').status).toBe('overdue');
     expect(pace(mk(30, 10, 1), 'l', 'm').status).toBe('done');
+  });
+});
+
+describe('modules contain approved tasks only', () => {
+  const c = ctx();
+  const pass = (cx: Ctx, learnerId: string, exerciseId: string): Ctx => {
+    const e = cx.exercises.find((x) => x.id === exerciseId)!;
+    return { ...cx, attempts: [...cx.attempts, { id: 'p_' + exerciseId, learnerId, materialId: e.materialId, exerciseId, type: e.type, score: 100, passed: true, seconds: 60, at: Date.now() }] };
+  };
+  const setStatus = (cx: Ctx, exerciseId: string, reviewStatus: 'approved' | 'draft' | 'rejected'): Ctx => ({ ...cx, exercises: cx.exercises.map((e) => (e.id === exerciseId ? { ...e, reviewStatus } : e)) });
+  const draft = c.exercises.find((e) => e.materialId === 'hw' && e.reviewStatus === 'draft' && !c.attempts.some((a) => a.learnerId === 'l1' && a.exerciseId === e.id && a.passed))!;
+
+  it('task counts and progress ignore drafts', async () => {
+    const { moduleTasks } = await import('../../src/store/stats');
+    const approved = c.exercises.filter((e) => e.materialId === 'hw' && e.reviewStatus === 'approved').length;
+    expect(approved).toBeLessThan(c.exercises.filter((e) => e.materialId === 'hw').length);
+    expect(moduleTasks(c, 'hw')).toHaveLength(approved);
+    expect(moduleRows(c, 'l1').find((r) => r.material.id === 'hw')!.tasks).toBe(approved);
+  });
+
+  it('passing a draft changes nothing for the learner until the draft is approved', () => {
+    const after = pass(c, 'l1', draft.id);
+    expect(overallProgress(after, 'l1')).toBe(overallProgress(c, 'l1'));
+    expect(quizAvg(after, 'l1')).toBe(quizAvg(c, 'l1'));
+    const approvedLater = setStatus(after, draft.id, 'approved');
+    expect(moduleRows(approvedLater, 'l1').find((r) => r.material.id === 'hw')!.tasks).toBe(moduleRows(c, 'l1').find((r) => r.material.id === 'hw')!.tasks + 1);
+  });
+
+  it('rejecting a task removes it from the module', () => {
+    const live = c.exercises.find((e) => e.materialId === 'hw' && e.reviewStatus === 'approved')!;
+    const rejected = setStatus(c, live.id, 'rejected');
+    expect(moduleRows(rejected, 'l1').find((r) => r.material.id === 'hw')!.tasks).toBe(moduleRows(c, 'l1').find((r) => r.material.id === 'hw')!.tasks - 1);
+  });
+
+  it('"next up" never points a learner at a draft', async () => {
+    const { nextUp } = await import('../../src/store/stats');
+    for (const l of c.learners) {
+      const n = nextUp(c, l.id);
+      if (!n) continue;
+      const m = c.materials.find((x) => n.why.endsWith(x.short))!;
+      const approvedTitles = c.exercises.filter((e) => e.materialId === m.id && e.reviewStatus === 'approved').map((e) => e.title);
+      expect(approvedTitles).toContain(n.title.split(' · ').slice(1).join(' · '));
+    }
   });
 });

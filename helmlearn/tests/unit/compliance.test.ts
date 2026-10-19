@@ -50,12 +50,22 @@ describe('review coverage and certificate eligibility', () => {
     expect(cov.approved).toBeGreaterThanOrEqual(7); // the 7 hand-written tasks
   });
 
-  it('a certificate cannot be issued while any task is still draft, even at 100% progress', () => {
+  it('pending drafts do not block a certificate: it needs every APPROVED task passed', () => {
     const c = ctx();
-    // l5 is 100% complete on hw per the seed activity, but hw has generated draft tasks on top of the approved ones
-    expect(canIssueCertificate(c, 'l5', 'hw')).toBe(false);
-    const approvedAll = { ...c, exercises: c.exercises.map((e) => (e.materialId === 'hw' ? { ...e, reviewStatus: 'approved' as const } : e)) };
-    expect(canIssueCertificate(approvedAll, 'l5', 'hw')).toBe(true);
+    // l1 has passed every approved hw task but only some of its generated drafts, which learners never get
+    expect(c.exercises.some((e) => e.materialId === 'hw' && e.reviewStatus === 'draft')).toBe(true);
+    expect(canIssueCertificate(c, 'l1', 'hw')).toBe(true);
+    // approving a draft l1 has not passed puts it in the module, so l1 is no longer at 100%
+    const passedByL1 = new Set(c.attempts.filter((a) => a.learnerId === 'l1' && a.passed).map((a) => a.exerciseId));
+    const unpassedDraft = c.exercises.find((e) => e.materialId === 'hw' && e.reviewStatus === 'draft' && !passedByL1.has(e.id))!;
+    const approvedMore = { ...c, exercises: c.exercises.map((e) => (e.id === unpassedDraft.id ? { ...e, reviewStatus: 'approved' as const } : e)) };
+    expect(canIssueCertificate(approvedMore, 'l1', 'hw')).toBe(false);
+  });
+
+  it('nothing to certify while a module has no approved tasks', () => {
+    const c = ctx();
+    const noneApproved = { ...c, exercises: c.exercises.map((e) => (e.materialId === 'hw' ? { ...e, reviewStatus: 'draft' as const } : e)) };
+    expect(canIssueCertificate(noneApproved, 'l5', 'hw')).toBe(false);
   });
 
   it('a certificate cannot be issued below 100% progress even if everything is approved', () => {
